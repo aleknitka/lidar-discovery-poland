@@ -1,0 +1,122 @@
+<?xml version='1.0' encoding="UTF-8" ?>
+<wfs:FeatureCollection
+   xmlns:gugik="http://www.gugik.gov.pl"
+   xmlns:gml="http://www.opengis.net/gml/3.2"
+   xmlns:wfs="http://www.opengis.net/wfs/2.0"
+   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+   xsi:schemaLocation="http://www.gugik.gov.pl https://mapy.geoportal.gov.pl/wss/service/PZGIK/DanePomiaroweLidarKRON86/WFS/Skorowidze?SERVICE=WFS&amp;VERSION=2.0.0&amp;REQUEST=DescribeFeatureType&amp;TYPENAME=gugik:SkorowidzDanychPomiarowychLIDAR2012&amp;OUTPUTFORMAT=application%2Fgml%2Bxml%3B%20version%3D3.2 http://www.opengis.net/wfs/2.0 http://schemas.opengis.net/wfs/2.0/wfs.xsd http://www.opengis.net/gml/3.2 http://schemas.opengis.net/gml/3.2.1/gml.xsd"
+   timeStamp="2026-11-13T08:55:10" numberMatched="unknown" numberReturned="3"
+   next="https://mapy.geoportal.gov.pl/wss/service/PZGIK/DanePomiaroweLidarKRON86/WFS/Skorowidze?service=WFS&amp;version=2.0.0&amp;request=GetFeature&amp;typeNames=gugik%3ASkorowidzDanychPomiarowychLIDAR2012&amp;BBOX=49.1%2C22.5%2C49.2%2C22.7%2Curn%3Aogc%3Adef%3Acrs%3AEPSG%3A%3A4326&amp;count=3&amp;STARTINDEX=3">
+      <wfs:boundedBy>
+      	<gml:Envelope srsName="urn:ogc:def:crs:EPSG::2180">
+      		<gml:lowerCorner>150895.570000 763929.130000</gml:lowerCorner>
+      		<gml:upperCorner>155359.530000 770981.220000</gml:upperCorner>
+      	</gml:Envelope>
+      </wfs:boundedBy>
+    <wfs:member>
+      <gugik:SkorowidzDanychPomiarowychLIDAR2012 gml:id="SkorowidzDanychPomiarowychLIDAR2012.353884">
+        <gml:boundedBy>
+        	<gml:Envelope srsName="urn:ogc:def:crs:EPSG::2180">
+        		<gml:lowerCorner>154147.390000 763929.130000</gml:lowerCorner>
+        		<gml:upperCorner>155359.530000 765122.280000</gml:upperCorner>
+        	</gml:Envelope>
+        </gml:boundedBy>
+        <gugik:msGeometry>
+          <gml:Polygon gml:id="SkorowidzDanychPomiarowychLIDAR2012.353884.1" srsName="urn:ogc:def:crs:EPSG::2180">
+            <gml:exterior>
+              <gml:LinearRing>
+                <gml:posList srsDimension="2">154726.120000 763956.880000 155304.850000 763929.130000 155332.160000 764497.830000 155359.530000 765066.530000 154780.790000 765094.410000 154202.060000 765122.280000 154174.700000 764553.460000 154147.390000 763984.640000 154726.120000 763956.880000 </gml:posList>
+              </gml:LinearRing>
+            </gml:exterior>
+          </gml:Polygon>
+        </gugik:msGeometry>
+        <gugik:godlo>M-34-106-A-d-3-1-1</gugik:godlo>
+        <gugik:akt_rok>2012</gugik:akt_rok>
+        <gugik:asortyment>chmura punktow</gugik:asortyment>
+        <gugik:format>LAS</gugik:format>
+        <gugik:char_przestrz>4 p/m2</gugik:char_przestrz>
+        <gugik:blad_sr_wys>0.15</gugik:blad_sr_wys>
+        <gugik:uklad_xy>PL-1992</gugik:uklad_xy>
+        <gugik:modul_archiwizacji>1:2500</gugik:modul_archiwizacji>
+        <gugik:uklad_h>PL-KRON86-NH</gugik:uklad_h>
+        <gugik:nr_zglosz>M-3334-012/11</gugik:nr_zglosz>
+        <gugik:akt_data gml:id="SkorowidzDanychPomiarowychLIDAR2012.353884.akt_data"><gml:timePosition>2012-10-15</gml:timePosition></gugik:akt_data>
+        <gugik:czy_ark_wypelniony>TAK</gugik:czy_ark_wypelniony>
+        <gugik:url_do_pobrania>https://opendata.geoportal.gov.pl/NumDaneWys/DanePomiaroweLAZ/5063/5063_353884_M-34-106-A-d-3-1-1.laz</gugik:url_do_pobrania>
+        <gugik:zrodlo_danych>Skaning laserowy</gugik:zrodlo_danych>
+        <gugik:dt_pzgik gml:id="SkorowidzDanychPomiarowychLIDAR2012.353884.dt_pzgik"><gml:timePosition>2013-09-09</gml:timePosition></gugik:dt_pzgik>
+        <gugik:blad_sr_syt>0.50</gugik:blad_sr_syt>
+      </gugik:SkorowidzDanychPomiarowychLIDAR2012>
+    </wfs:member>
+    <wfs:member>
+      <gugik:SkorowidzDanychPomiarowychLIDAR2012 gml:id="SkorowidzDanychPomiarowychLIDAR2012.353862">
+        <gml:boundedBy>
+        	<gml:Envelope srsName="urn:ogc:def:crs:EPSG::2180">
+        		<gml:lowerCorner>150951.190000 769786.190000</gml:lowerCorner>
+        		<gml:upperCorner>152164.500000 770981.220000</gml:upperCorner>
+        	</gml:Envelope>
+        </gml:boundedBy>
+        <gugik:msGeometry>
+          <gml:Polygon gml:id="SkorowidzDanychPomiarowychLIDAR2012.353862.1" srsName="urn:ogc:def:crs:EPSG::2180">
+            <gml:exterior>
+              <gml:LinearRing>
+                <gml:posList srsDimension="2">151529.920000 769814.540000 152108.640000 769786.190000 152136.540000 770355.250000 152164.500000 770924.300000 151585.780000 770952.760000 151007.050000 770981.220000 150979.090000 770412.050000 150951.190000 769842.880000 151529.920000 769814.540000 </gml:posList>
+              </gml:LinearRing>
+            </gml:exterior>
+          </gml:Polygon>
+        </gugik:msGeometry>
+        <gugik:godlo>M-34-106-A-d-4-3-4</gugik:godlo>
+        <gugik:akt_rok>2012</gugik:akt_rok>
+        <gugik:asortyment>chmura punktow</gugik:asortyment>
+        <gugik:format>LAS</gugik:format>
+        <gugik:char_przestrz>4 p/m2</gugik:char_przestrz>
+        <gugik:blad_sr_wys>0.15</gugik:blad_sr_wys>
+        <gugik:uklad_xy>PL-1992</gugik:uklad_xy>
+        <gugik:modul_archiwizacji>1:2500</gugik:modul_archiwizacji>
+        <gugik:uklad_h>PL-KRON86-NH</gugik:uklad_h>
+        <gugik:nr_zglosz>M-3334-012/11</gugik:nr_zglosz>
+        <gugik:akt_data gml:id="SkorowidzDanychPomiarowychLIDAR2012.353862.akt_data"><gml:timePosition>2012-10-15</gml:timePosition></gugik:akt_data>
+        <gugik:czy_ark_wypelniony>TAK</gugik:czy_ark_wypelniony>
+        <gugik:url_do_pobrania>https://opendata.geoportal.gov.pl/NumDaneWys/DanePomiaroweLAZ/5063/5063_353862_M-34-106-A-d-4-3-4.laz</gugik:url_do_pobrania>
+        <gugik:zrodlo_danych>Skaning laserowy</gugik:zrodlo_danych>
+        <gugik:dt_pzgik gml:id="SkorowidzDanychPomiarowychLIDAR2012.353862.dt_pzgik"><gml:timePosition>2013-09-09</gml:timePosition></gugik:dt_pzgik>
+        <gugik:blad_sr_syt>0.50</gugik:blad_sr_syt>
+      </gugik:SkorowidzDanychPomiarowychLIDAR2012>
+    </wfs:member>
+    <wfs:member>
+      <gugik:SkorowidzDanychPomiarowychLIDAR2012 gml:id="SkorowidzDanychPomiarowychLIDAR2012.353863">
+        <gml:boundedBy>
+        	<gml:Envelope srsName="urn:ogc:def:crs:EPSG::2180">
+        		<gml:lowerCorner>150895.570000 768648.080000</gml:lowerCorner>
+        		<gml:upperCorner>152108.640000 769842.880000</gml:upperCorner>
+        	</gml:Envelope>
+        </gml:boundedBy>
+        <gugik:msGeometry>
+          <gml:Polygon gml:id="SkorowidzDanychPomiarowychLIDAR2012.353863.1" srsName="urn:ogc:def:crs:EPSG::2180">
+            <gml:exterior>
+              <gml:LinearRing>
+                <gml:posList srsDimension="2">151474.290000 768676.310000 152053.020000 768648.080000 152080.800000 769217.140000 152108.640000 769786.190000 151529.920000 769814.540000 150951.190000 769842.880000 150923.350000 769273.700000 150895.570000 768704.530000 151474.290000 768676.310000 </gml:posList>
+              </gml:LinearRing>
+            </gml:exterior>
+          </gml:Polygon>
+        </gugik:msGeometry>
+        <gugik:godlo>M-34-106-A-d-4-3-3</gugik:godlo>
+        <gugik:akt_rok>2012</gugik:akt_rok>
+        <gugik:asortyment>chmura punktow</gugik:asortyment>
+        <gugik:format>LAS</gugik:format>
+        <gugik:char_przestrz>4 p/m2</gugik:char_przestrz>
+        <gugik:blad_sr_wys>0.15</gugik:blad_sr_wys>
+        <gugik:uklad_xy>PL-1992</gugik:uklad_xy>
+        <gugik:modul_archiwizacji>1:2500</gugik:modul_archiwizacji>
+        <gugik:uklad_h>PL-KRON86-NH</gugik:uklad_h>
+        <gugik:nr_zglosz>M-3334-012/11</gugik:nr_zglosz>
+        <gugik:akt_data gml:id="SkorowidzDanychPomiarowychLIDAR2012.353863.akt_data"><gml:timePosition>2012-10-15</gml:timePosition></gugik:akt_data>
+        <gugik:czy_ark_wypelniony>TAK</gugik:czy_ark_wypelniony>
+        <gugik:url_do_pobrania>https://opendata.geoportal.gov.pl/NumDaneWys/DanePomiaroweLAZ/5063/5063_353863_M-34-106-A-d-4-3-3.laz</gugik:url_do_pobrania>
+        <gugik:zrodlo_danych>Skaning laserowy</gugik:zrodlo_danych>
+        <gugik:dt_pzgik gml:id="SkorowidzDanychPomiarowychLIDAR2012.353863.dt_pzgik"><gml:timePosition>2013-09-09</gml:timePosition></gugik:dt_pzgik>
+        <gugik:blad_sr_syt>0.50</gugik:blad_sr_syt>
+      </gugik:SkorowidzDanychPomiarowychLIDAR2012>
+    </wfs:member>
+</wfs:FeatureCollection>
+
