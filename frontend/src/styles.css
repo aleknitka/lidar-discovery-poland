@@ -433,3 +433,86 @@ fieldset {
     flex-wrap: wrap;
   }
 }
+
+/* Get data for this view */
+.list-group {
+  margin: 10px 0 4px;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted, #666);
+}
+.map-action {
+  position: absolute;
+  left: 8px;
+  bottom: 28px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  max-height: calc(100% - 60px);
+}
+.area-hint {
+  padding: 2px 8px;
+  background: var(--panel);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+.area-card {
+  width: 340px;
+  max-width: 100%;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.area-card h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+.area-card p {
+  margin: 4px 0;
+}
+.area-progress {
+  width: 100%;
+  height: 14px;
+}
+.area-card .warn {
+  color: #b27300;
+}
+.area-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.chip {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid;
+  border-radius: 2px;
+}
+.chip-todo {
+  border-color: #e0a100;
+}
+.chip-cached {
+  border-color: #2e9d4f;
+}
+.chip-viewport {
+  border-color: #00b4d8;
+}
+@media (max-width: 480px) {
+  .map-action {
+    right: 8px;
+    bottom: 24px;
+  }
+  .area-card {
+    width: 100%;
+  }
+}

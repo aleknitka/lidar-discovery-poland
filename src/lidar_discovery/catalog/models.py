@@ -22,6 +22,17 @@ REALITY = ("unassessed", "artefact", "natural", "anthropogenic")
 ORIGINS = ("manual", "rule", "ml", "vlm")
 REVIEW_STATUSES = ("proposed", "accepted", "rejected", "needs_second_opinion")
 DISCLOSURES = ("public", "generalised", "restricted")
+LOCATION_KINDS = ("village", "area")
+JOB_STATES = (
+    "queued",
+    "listing",
+    "downloading",
+    "processing",
+    "done",
+    "failed",
+    "cancelled",
+)
+ACTIVE_JOB_STATES = ("queued", "listing", "downloading", "processing")
 PRODUCT_KINDS = ("dtm", "hillshade", "slope", "svf", "lrm", "ground_density")
 
 
@@ -44,6 +55,7 @@ class Location(SQLModel, table=True):
     provenance: str = "[]"  # JSON list of {provider, ref, fetched_at}
     disclosure: str = "public"
     notes: str | None = None
+    kind: str = "village"  # 'village' | 'area' (areas are created by "Get data for this view")
 
 
 class Product(SQLModel, table=True):
@@ -84,3 +96,28 @@ class TileCache(SQLModel, table=True):
     key: str = Field(primary_key=True)
     payload: str
     fetched_at: datetime = Field(default_factory=utcnow)
+
+
+class Job(SQLModel, table=True):
+    """A background job (v0: `fetch-area`). Progress is persisted so the UI survives reloads."""
+
+    id: str = Field(primary_key=True)
+    kind: str = "fetch-area"
+    params: str = "{}"  # JSON
+    state: str = Field(default="queued", index=True)
+    bytes_done: int = 0
+    bytes_total: int = 0
+    tiles_done: int = 0
+    tiles_total: int = 0
+    current_item: str | None = None
+    tiles: str = "[]"  # JSON list of {godlo, name, status, bytes, size_bytes, footprint}
+    step: int = 0
+    steps: int = 0
+    step_name: str | None = None
+    speed_bps: float | None = None
+    message: str | None = None
+    error: str | None = None
+    location_id: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    finished_at: datetime | None = None

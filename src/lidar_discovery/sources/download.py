@@ -11,19 +11,36 @@ import httpx
 from lidar_discovery.config import USER_AGENT
 
 
-def remote_size(url: str, client: httpx.Client | None = None) -> int | None:
+def make_client(timeout: float = 60.0) -> httpx.Client:
+    """The one place HTTP clients for LiDAR files are created (tests swap it for a mock)."""
+    return httpx.Client(
+        headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=httpx.Timeout(timeout)
+    )
+
+
+def remote_head(url: str, client: httpx.Client | None = None) -> dict[str, str | int | None] | None:
+    """HEAD a file: {size, etag, last_modified} or None when unavailable."""
     own = client is None
-    client = client or httpx.Client(headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+    client = client or make_client(30.0)
     try:
         r = client.head(url)
         if r.status_code == 200 and "content-length" in r.headers:
-            return int(r.headers["content-length"])
+            return {
+                "size": int(r.headers["content-length"]),
+                "etag": r.headers.get("etag"),
+                "last_modified": r.headers.get("last-modified"),
+            }
     except httpx.HTTPError:
         return None
     finally:
         if own:
             client.close()
     return None
+
+
+def remote_size(url: str, client: httpx.Client | None = None) -> int | None:
+    head = remote_head(url, client)
+    return int(head["size"] or 0) if head else None
 
 
 def download_file(
@@ -38,9 +55,7 @@ def download_file(
     resumes from dest.part when the server supports Range."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     own = client is None
-    client = client or httpx.Client(
-        headers={"User-Agent": USER_AGENT}, follow_redirects=True, timeout=httpx.Timeout(60.0)
-    )
+    client = client or make_client()
     try:
         if expected_size is None:
             expected_size = remote_size(url, client)

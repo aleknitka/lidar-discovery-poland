@@ -276,6 +276,85 @@ def process(
         typer.echo(f"  {k:16} {v:6.1f}s")
 
 
+@app.command("fetch-bbox")
+def fetch_bbox(
+    west: float,
+    south: float,
+    east: float,
+    north: float,
+    source: Annotated[str | None, typer.Option(help="Source id (default: newest epoch).")] = None,
+    year: Annotated[int | None, typer.Option(help="Acquisition year (default: newest).")] = None,
+    estimate_only: Annotated[bool, typer.Option(help="Print the estimate and stop.")] = False,
+) -> None:
+    """Download only the sheets covering a WGS84 bbox, then process it (same code as the UI)."""
+    import threading
+
+    from rich.progress import (
+        BarColumn,
+        DownloadColumn,
+        Progress,
+        TextColumn,
+        TimeRemainingColumn,
+        TransferSpeedColumn,
+    )
+
+    from lidar_discovery import areas, jobs
+
+    s = _settings()
+    try:
+        bbox = areas.parse_bbox([west, south, east, north])
+        est = areas.estimate_area(s, bbox, source, year)
+    except areas.AreaError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from None
+    typer.echo(
+        f"{est['area_km2']:.3f} km2, {est.get('source_id')} {est.get('year')}: "
+        f"{est['sheets']} sheets, {est['bytes_total'] / 1e6:.0f} MB total, "
+        f"{est['bytes_cached'] / 1e6:.0f} MB cached, "
+        f"{est['bytes_to_download'] / 1e6:.0f} MB to download"
+        + (" (already processed)" if est["processed"] else "")
+    )
+    for t in est["tiles"]:
+        state = "cached" if t["cached"] else "to download"
+        typer.echo(f"  {t['godlo']:28} {(t['size_bytes'] or 0) / 1e6:7.0f} MB  {state}")
+    if estimate_only or not est["tiles"]:
+        raise typer.Exit(0 if est["tiles"] or estimate_only else 1)
+    job, _ = jobs.create_fetch_job(s, bbox, est["source_id"], est["year"])
+    cancel = threading.Event()
+    th = threading.Thread(target=jobs.run_fetch_job, args=(s, job.id, cancel), daemon=True)
+    th.start()
+    with Progress(
+        TextColumn("{task.description:28}"),
+        BarColumn(),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+    ) as bar:
+        task = bar.add_task("starting", total=None)
+        try:
+            while th.is_alive():
+                j = jobs.job_to_dict(jobs.get_job(s, job.id))  # type: ignore[arg-type]
+                if j["state"] == "processing":
+                    bar.update(
+                        task, description=f"processing {j['step_name'] or ''}",
+                        total=j["steps"], completed=j["step"],
+                    )  # fmt: skip
+                else:
+                    bar.update(
+                        task, description=f"{j['state']} {j['current_item'] or ''}"[:28],
+                        total=j["bytes_total"] or None, completed=j["bytes_done"],
+                    )  # fmt: skip
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            cancel.set()
+            th.join()
+    j = jobs.job_to_dict(jobs.get_job(s, job.id))  # type: ignore[arg-type]
+    typer.echo(
+        f"{j['state']}: {j['message'] or ''} {j['error'] or ''} (location {j['location_id']})"
+    )
+    raise typer.Exit(0 if j["state"] == "done" else 1)
+
+
 @app.command()
 def serve(
     host: str = "127.0.0.1",

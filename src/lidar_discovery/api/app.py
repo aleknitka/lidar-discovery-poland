@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlmodel import Session
 
-from lidar_discovery import __version__
+from lidar_discovery import __version__, areas, jobs
 from lidar_discovery import sources as _sources  # noqa: F401  (registers built-in sources)
 from lidar_discovery.api.tiles import render_tile
 from lidar_discovery.catalog import repo
@@ -146,6 +148,67 @@ def layer_tile(
     return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
+def _area_error(e: areas.AreaError) -> JSONResponse:
+    return JSONResponse({"detail": str(e), **e.payload}, status_code=422)
+
+
+@router.get("/areas/estimate")
+def areas_estimate(
+    bbox: str,
+    source_id: str | None = None,
+    year: int | None = None,
+    cfg: Settings = Depends(get_cfg),
+) -> Any:
+    try:
+        return areas.estimate_area(cfg, areas.parse_bbox(bbox), source_id, year)
+    except areas.AreaError as e:
+        return _area_error(e)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@router.post("/areas/fetch", status_code=202)
+def areas_fetch(
+    request: Request,
+    body: dict[str, Any] = Body(...),
+    cfg: Settings = Depends(get_cfg),
+) -> Any:
+    _no_writes_in_public(cfg)
+    try:
+        bbox = areas.parse_bbox(body.get("bbox") or "")
+        year = body.get("year")
+        if year is not None and not isinstance(year, int):
+            raise areas.AreaError("year must be an integer")
+        job, created = jobs.create_fetch_job(cfg, bbox, body.get("source_id"), year)
+    except areas.AreaError as e:
+        return _area_error(e)
+    if created:
+        request.app.state.runner.submit(job)
+    return jobs.job_to_dict(job)
+
+
+@router.get("/jobs")
+def list_jobs(active: bool | None = None, cfg: Settings = Depends(get_cfg)) -> list[dict[str, Any]]:
+    return [jobs.job_to_dict(j) for j in jobs.list_jobs(cfg, active)]
+
+
+@router.get("/jobs/{job_id}")
+def get_job(job_id: str, cfg: Settings = Depends(get_cfg)) -> dict[str, Any]:
+    j = jobs.get_job(cfg, job_id)
+    if j is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    return jobs.job_to_dict(j)
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, request: Request, cfg: Settings = Depends(get_cfg)) -> dict[str, Any]:
+    _no_writes_in_public(cfg)
+    j = request.app.state.runner.cancel(job_id)
+    if j is None:
+        raise HTTPException(404, f"job {job_id!r} not found")
+    return jobs.job_to_dict(j)
+
+
 @router.get("/candidates")
 def candidates(
     location_id: str | None = None,
@@ -221,8 +284,17 @@ def patch_candidate(
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
     cfg.ensure_dirs()
-    app = FastAPI(title="lidar-discovery-poland", version=__version__)
+    runner = jobs.JobRunner(cfg)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        jobs.mark_interrupted(cfg)  # jobs of a previous process cannot continue
+        yield
+        runner.shutdown()
+
+    app = FastAPI(title="lidar-discovery-poland", version=__version__, lifespan=lifespan)
     app.state.settings = cfg
+    app.state.runner = runner
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.cors_origins,

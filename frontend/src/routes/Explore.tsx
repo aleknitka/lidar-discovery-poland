@@ -13,10 +13,11 @@ import LayerControl, {
   type LayerStates,
 } from '../components/LayerControl';
 import LocationList from '../components/LocationList';
+import AreaFetch from '../components/AreaFetch';
 import CoveragePanel from '../components/CoveragePanel';
 import CandidatePanel, { type DrawMode, type DrawState } from '../components/CandidatePanel';
 import { StatusBadge } from '../components/Badges';
-import { locationAoi, locationName } from '../lib/geo';
+import { locationAoi, locationName, type Bounds } from '../lib/geo';
 
 const NO_DRAW: DrawState = { mode: 'none', vertices: [] };
 
@@ -67,6 +68,8 @@ export default function Explore() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draw, setDraw] = useState<DrawState>(NO_DRAW);
   const [panelOpen, setPanelOpen] = useState(true);
+  const [view, setView] = useState<{ bounds: Bounds; zoom: number } | null>(null);
+  const [areaFc, setAreaFc] = useState<FeatureCollection | null>(null);
 
   const layers = useMemo(() => layersQ.data ?? [], [layersQ.data]);
 
@@ -126,6 +129,8 @@ export default function Explore() {
     selectedId,
     draft: draw.mode === 'none' ? null : draftCollection(draw),
     crosshair: draw.mode !== 'none',
+    area: areaFc,
+    onViewChange: setView,
     onClick: onMapClick,
   };
 
@@ -182,6 +187,7 @@ export default function Explore() {
         ) : (
           <MapView {...common} rasters={stackRasters} />
         )}
+        <AreaFetch view={view} onOverlay={setAreaFc} onDone={selectLocation} />
         <div className="map-title">{feature ? locationName(feature) : 'Select a location'}</div>
       </main>
 

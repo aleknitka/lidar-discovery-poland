@@ -26,6 +26,10 @@ export interface MapViewProps {
   /** Show the attribution control (only one map should). */
   attribution?: boolean;
   crosshair?: boolean;
+  /** Viewport rectangle + sheet footprints; each feature has properties.state (see AREA_COLORS). */
+  area?: FeatureCollection | null;
+  /** Fired on load and after every pan/zoom. */
+  onViewChange?: (view: { bounds: Bounds; zoom: number }) => void;
   onClick?: (lngLat: [number, number], candidateId: string | null) => void;
   onMapReady?: (map: MlMap) => void;
   className?: string;
@@ -65,6 +69,22 @@ const statusColor = [
   STATUS_COLORS.rejected,
   'needs_second_opinion',
   STATUS_COLORS.needs_second_opinion,
+  '#888888',
+] as unknown as string;
+
+export const AREA_COLORS: Record<string, string> = {
+  viewport: '#00b4d8',
+  cached: '#2e9d4f',
+  done: '#2e9d4f',
+  todo: '#e0a100',
+  pending: '#e0a100',
+  downloading: '#d1582e',
+  failed: '#b23b3b',
+};
+const areaColor = [
+  'match',
+  ['get', 'state'],
+  ...Object.entries(AREA_COLORS).flat(),
   '#888888',
 ] as unknown as string;
 
@@ -134,6 +154,26 @@ function addOverlays(map: MlMap) {
     filter: ['in', ['geometry-type'], ['literal', ['LineString', 'Polygon']]],
     paint: { 'line-color': '#00b4d8', 'line-width': 2, 'line-dasharray': [2, 1] },
   });
+  map.addSource('area', { type: 'geojson', data: EMPTY });
+  map.addLayer({
+    id: 'area-fill',
+    type: 'fill',
+    source: 'area',
+    paint: {
+      'fill-color': areaColor,
+      'fill-opacity': ['match', ['get', 'state'], 'viewport', 0, 'downloading', 0.3, 0.12],
+    },
+  });
+  map.addLayer({
+    id: 'area-line',
+    type: 'line',
+    source: 'area',
+    paint: {
+      'line-color': areaColor,
+      'line-width': ['match', ['get', 'state'], 'viewport', 3, 2],
+      'line-dasharray': [3, 2],
+    },
+  });
   map.addLayer({
     id: 'draft-pts',
     type: 'circle',
@@ -157,6 +197,8 @@ export default function MapView({
   interactive = true,
   attribution = true,
   crosshair,
+  area,
+  onViewChange,
   onClick,
   onMapReady,
   className,
@@ -168,6 +210,8 @@ export default function MapView({
   onClickRef.current = onClick;
   const onReadyRef = useRef(onMapReady);
   onReadyRef.current = onMapReady;
+  const onViewRef = useRef(onViewChange);
+  onViewRef.current = onViewChange;
   const initialBounds = useRef(bounds);
 
   // Create the map once.
@@ -186,7 +230,16 @@ export default function MapView({
       addOverlays(map);
       setLoaded(true);
       onReadyRef.current?.(map);
+      emitView();
     });
+    const emitView = () => {
+      const b = map.getBounds();
+      onViewRef.current?.({
+        bounds: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
+        zoom: map.getZoom(),
+      });
+    };
+    map.on('moveend', emitView);
     map.on('click', (e: maplibregl.MapMouseEvent) => {
       const hit = map.queryRenderedFeatures(e.point, { layers: CAND_LAYERS })[0];
       const id = (hit?.properties?.id as string | undefined) ?? null;
@@ -260,6 +313,11 @@ export default function MapView({
     const src = mapRef.current?.getSource('cands') as maplibregl.GeoJSONSource | undefined;
     src?.setData((candidates as FeatureCollection | null | undefined) ?? EMPTY);
   }, [candidates, loaded]);
+
+  useEffect(() => {
+    const src = mapRef.current?.getSource('area') as maplibregl.GeoJSONSource | undefined;
+    src?.setData(area ?? EMPTY);
+  }, [area, loaded]);
 
   useEffect(() => {
     const src = mapRef.current?.getSource('draft') as maplibregl.GeoJSONSource | undefined;

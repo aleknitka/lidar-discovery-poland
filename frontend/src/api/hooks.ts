@@ -1,6 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './client';
+import { ACTIVE_JOB_STATES, type Job } from './areaTypes';
 import type { CandidateInput, CandidatePatch } from './types';
+
+export const isActiveJob = (j: Job | undefined) => !!j && ACTIVE_JOB_STATES.includes(j.state);
+
+/** Jobs still running on the server (re-attaches the progress panel after a reload). */
+export const useActiveJobs = () =>
+  useQuery({ queryKey: ['jobs', 'active'], queryFn: api.activeJobs, staleTime: 0 });
+
+/** Polls once per second while the job is active, then stops. */
+export const useJob = (id: string | null) =>
+  useQuery({
+    queryKey: ['job', id],
+    queryFn: () => api.job(id as string),
+    enabled: !!id,
+    refetchInterval: (q) => (!q.state.data || isActiveJob(q.state.data) ? 1000 : false),
+  });
 
 export const useLocations = () => useQuery({ queryKey: ['locations'], queryFn: api.locations });
 

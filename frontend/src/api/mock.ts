@@ -3,6 +3,7 @@
 // illustrative only and are not real survey data.
 import * as maplibregl from 'maplibre-gl';
 import type { Polygon } from 'geojson';
+import { geometryBounds } from '../lib/geo';
 import type {
   Candidate,
   CandidateCollection,
@@ -11,6 +12,7 @@ import type {
   Location,
   LocationCollection,
 } from './types';
+import type { AreaEstimate, BBox, Job, JobTile } from './areaTypes';
 
 const box = (lon: number, lat: number, dLon: number, dLat: number) =>
   [lon - dLon, lat - dLat, lon + dLon, lat + dLat] as [number, number, number, number];
@@ -75,9 +77,13 @@ const EPOCHS: [number, string][] = [
 function layersFor(loc: Location): Layer[] {
   if (!loc.properties.has_products) return [];
   const [lon, lat] = (loc.geometry as unknown as { coordinates: [number, number] }).coordinates;
-  const bounds = box(lon, lat, 0.012, 0.008);
-  return EPOCHS.flatMap(([epoch, source_id]) =>
-    KINDS.map((kind) => {
+  const isArea = loc.properties.kind === 'area';
+  const bounds = isArea
+    ? (geometryBounds(loc.properties.polygon!) as BBox)
+    : box(lon, lat, 0.012, 0.008);
+  const epochs = isArea ? [EPOCHS[1]] : EPOCHS;
+  return epochs.flatMap(([epoch, source_id]) =>
+    (isArea ? (['svf', 'hillshade'] as const) : KINDS).map((kind) => {
       const id = `${loc.properties.id}-${source_id}-${epoch}-${kind}`;
       return {
         id,
@@ -181,9 +187,236 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const err = (status: number, detail: string) => json({ detail }, status);
 
+// --- "Get data for this view": simulated estimate + a ~10 s job ------------------------------
+const SHEET_DLON = 0.0165; // ~1.2 km
+const SHEET_DLAT = 0.0108;
+const MOCK_EPOCHS = [
+  { source_id: 'gugik-evrf2007', year: 2023, tiles: 0, nominal_density: '12 p/m2', k: 3 },
+  { source_id: 'gugik-kron86', year: 2012, tiles: 0, nominal_density: '4 p/m2', k: 1 },
+];
+const km2Of = (b: BBox) =>
+  (b[2] - b[0]) * 111.32 * Math.cos((((b[1] + b[3]) / 2) * Math.PI) / 180) * (b[3] - b[1]) * 111.32;
+
+const sheetPoly = (x0: number, y0: number): Polygon => ({
+  type: 'Polygon',
+  coordinates: [
+    [
+      [x0, y0],
+      [x0 + SHEET_DLON, y0],
+      [x0 + SHEET_DLON, y0 + SHEET_DLAT],
+      [x0, y0 + SHEET_DLAT],
+      [x0, y0],
+    ],
+  ],
+});
+
+function mockEstimate(bbox: BBox, sourceId: string | null, year: number | null) {
+  const area = km2Of(bbox);
+  const limits = { max_area_km2: 6, max_bytes: 4e9 };
+  if (area > limits.max_area_km2)
+    return {
+      status: 422,
+      body: {
+        detail: 'area too large',
+        estimate: { bbox, area_km2: area, tiles: [], bytes_total: 0, over_limit: 'area', limits },
+      },
+    };
+  const ep =
+    MOCK_EPOCHS.find(
+      (e) => (!sourceId || e.source_id === sourceId) && (!year || e.year === year),
+    ) ?? MOCK_EPOCHS[0];
+  const tiles: AreaEstimate['tiles'] = [];
+  for (let i = Math.floor(bbox[0] / SHEET_DLON); i * SHEET_DLON < bbox[2]; i++)
+    for (let j = Math.floor(bbox[1] / SHEET_DLAT); j * SHEET_DLAT < bbox[3]; j++) {
+      tiles.push({
+        godlo: `M-34-106-${i}-${j}`,
+        name: `${i}_${j}_mock.laz`,
+        size_bytes: (90 + ((i * 7 + j * 13) % 11) * 12) * 1e6 * ep.k,
+        cached: tiles.length === 0,
+        partial_bytes: 0,
+        footprint: sheetPoly(i * SHEET_DLON, j * SHEET_DLAT),
+      });
+    }
+  const total = tiles.reduce((a, t) => a + (t.size_bytes ?? 0), 0);
+  const cached = tiles.filter((t) => t.cached).reduce((a, t) => a + (t.size_bytes ?? 0), 0);
+  const epochs = MOCK_EPOCHS.map((e) => ({ ...e, tiles: tiles.length }));
+  const est: AreaEstimate = {
+    bbox,
+    area_km2: area,
+    source_id: ep.source_id,
+    year: ep.year,
+    epochs,
+    tiles,
+    sheets: tiles.length,
+    bytes_total: total,
+    bytes_cached: cached,
+    bytes_to_download: total - cached,
+    processed: false,
+    limits,
+    location_id: 'area-mock0001',
+  };
+  if (total > limits.max_bytes) est.over_limit = 'bytes';
+  return {
+    status: est.over_limit ? 422 : 200,
+    body: est.over_limit ? { detail: 'too many bytes', estimate: est } : est,
+  };
+}
+
+interface MockJob {
+  id: string;
+  start: number;
+  est: AreaEstimate;
+  cancelledAt?: number;
+  added?: boolean;
+}
+const mockJobs: MockJob[] = [];
+const JOB_MS = 10_000;
+const STEPS = ['ground points', 'dtm', 'density', 'hillshade', 'slope', 'svf', 'lrm', 'write'];
+
+function mockJobView(mj: MockJob): Job {
+  const t = (mj.cancelledAt ?? Date.now()) - mj.start;
+  const total = mj.est.bytes_to_download ?? 0;
+  let state: Job['state'] = 'downloading';
+  if (t < 600) state = 'listing';
+  else if (t >= 7000) state = 'processing';
+  if (t >= JOB_MS) state = 'done';
+  if (mj.cancelledAt != null) state = 'cancelled';
+  const frac = Math.min(1, Math.max(0, (t - 600) / 6400));
+  const done = Math.round(total * frac);
+  let acc = 0;
+  const tiles: JobTile[] = mj.est.tiles.map((x) => {
+    const size = x.size_bytes ?? 0;
+    if (x.cached)
+      return {
+        godlo: x.godlo,
+        name: x.name,
+        status: 'cached',
+        bytes: size,
+        size_bytes: size,
+        footprint: x.footprint,
+      };
+    const got = Math.max(0, Math.min(size, done - acc));
+    acc += size;
+    const status = got >= size ? 'done' : got > 0 ? 'downloading' : 'pending';
+    return {
+      godlo: x.godlo,
+      name: x.name,
+      status,
+      bytes: got,
+      size_bytes: size,
+      footprint: x.footprint,
+    };
+  });
+  const cur = tiles.find((x) => x.status === 'downloading');
+  const step =
+    state === 'processing'
+      ? Math.min(STEPS.length, Math.floor(((t - 7000) / 3000) * STEPS.length) + 1)
+      : state === 'done'
+        ? STEPS.length
+        : 0;
+  const speed = total / 6.4;
+  if (state === 'done' && !mj.added) {
+    mj.added = true;
+    addMockArea(mj.est.bbox);
+  }
+  return {
+    id: mj.id,
+    kind: 'fetch-area',
+    params: { bbox: mj.est.bbox, source_id: mj.est.source_id, year: mj.est.year },
+    state,
+    bytes_done: state === 'listing' ? 0 : done,
+    bytes_total: total,
+    tiles_done: tiles.filter((x) => x.status === 'done' || x.status === 'cached').length,
+    tiles_total: tiles.length,
+    current_item: state === 'downloading' ? (cur?.name ?? null) : null,
+    tiles,
+    step,
+    steps: state === 'processing' || state === 'done' ? STEPS.length : 0,
+    step_name: state === 'processing' ? STEPS[step - 1] : null,
+    speed_bps: state === 'downloading' ? speed : null,
+    eta_s: state === 'downloading' ? (total - done) / speed : null,
+    progress: 0,
+    message: state,
+    error: null,
+    location_id: state === 'done' ? 'area-mock0001' : null,
+    created_at: new Date(mj.start).toISOString(),
+    updated_at: new Date().toISOString(),
+    finished_at: state === 'done' || state === 'cancelled' ? new Date().toISOString() : null,
+  };
+}
+
+function addMockArea(bbox: BBox) {
+  if (locations.some((l) => l.properties.id === 'area-mock0001')) return;
+  const [w, s, e, n] = bbox;
+  locations.push({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [(w + e) / 2, (s + n) / 2] },
+    properties: {
+      id: 'area-mock0001',
+      names: { other: `Area ${((s + n) / 2).toFixed(3)}N ${((w + e) / 2).toFixed(3)}E` },
+      depopulation: null,
+      has_products: true,
+      disclosure: 'restricted',
+      kind: 'area',
+      polygon: {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [w, s],
+            [e, s],
+            [e, n],
+            [w, n],
+            [w, s],
+          ],
+        ],
+      },
+      provenance: [{ provider: 'viewport', ref: 'mock' }],
+    },
+  });
+}
+
+function handleAreas(method: string, p: string, url: URL, body: unknown): Response | null {
+  let m: RegExpMatchArray | null;
+  if (p === '/areas/estimate') {
+    const bb = (url.searchParams.get('bbox') ?? '').split(',').map(Number) as BBox;
+    if (bb.length !== 4 || bb.some(Number.isNaN)) return err(422, 'bbox must be four numbers');
+    const yr = url.searchParams.get('year');
+    const r = mockEstimate(bb, url.searchParams.get('source_id'), yr ? Number(yr) : null);
+    return json(r.body, r.status);
+  }
+  if (p === '/areas/fetch' && method === 'POST') {
+    const b = body as { bbox: BBox; source_id?: string; year?: number };
+    const r = mockEstimate(b.bbox, b.source_id ?? null, b.year ?? null);
+    if (r.status !== 200) return json(r.body, r.status);
+    const mj: MockJob = {
+      id: `job-${mockJobs.length + 1}`,
+      start: Date.now(),
+      est: r.body as AreaEstimate,
+    };
+    mockJobs.push(mj);
+    return json(mockJobView(mj), 202);
+  }
+  if (p === '/jobs') {
+    const act = url.searchParams.get('active') === 'true';
+    const all = mockJobs.map(mockJobView);
+    const live = ['queued', 'listing', 'downloading', 'processing'];
+    return json(act ? all.filter((j) => live.includes(j.state)) : all);
+  }
+  if ((m = p.match(/^\/jobs\/([^/]+)(\/cancel)?$/))) {
+    const mj = mockJobs.find((x) => x.id === m![1]);
+    if (!mj) return err(404, 'Job not found');
+    if (m[2] && method === 'POST' && mj.cancelledAt == null && Date.now() - mj.start < JOB_MS)
+      mj.cancelledAt = Date.now();
+    return json(mockJobView(mj));
+  }
+  return null;
+}
+
 function handle(method: string, url: URL, body: unknown): Response {
   const p = url.pathname.replace(/^\/api/, '');
   let m: RegExpMatchArray | null;
+  const areaRes = handleAreas(method, p, url, body);
+  if (areaRes) return areaRes;
   if (p === '/health') return json({ status: 'ok', mock: true });
   if (p === '/sources')
     return json([

@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -24,6 +25,8 @@ from lidar_discovery.processing import vis
 from lidar_discovery.processing.cog import write_cog
 from lidar_discovery.processing.dtm import Grid, grid_dtm, ground_density
 from lidar_discovery.processing.points import read_ground
+
+PIPELINE_VERSION = "1"  # bump when outputs change; part of the area processing cache key
 
 DISPLAY_RANGES = {
     "hillshade": [0.0, 1.0],
@@ -49,6 +52,16 @@ class ProcessParams:
 
     def margin_m(self) -> float:
         return max(self.svf_radius_m, 3 * self.lrm_sigma_m) + 2 * self.res
+
+
+def step_names(params: ProcessParams) -> list[str]:
+    """Names of the progress steps reported by `process_aoi` (in order)."""
+    names = ["ground points", "dtm"]
+    if "ground_density" in params.kinds:
+        names.append("density")
+    names += [k for k in ("hillshade", "slope", "svf", "lrm") if k in params.kinds]
+    names.append("write")
+    return names
 
 
 @dataclass
@@ -80,7 +93,10 @@ def sha256_file(path: Path) -> str:
 
 
 def compute_products(
-    pts: np.ndarray, aoi_2180: Polygon, params: ProcessParams
+    pts: np.ndarray,
+    aoi_2180: Polygon,
+    params: ProcessParams,
+    on_step: Callable[[str], None] | None = None,
 ) -> tuple[Grid, dict[str, np.ndarray], dict[str, float]]:
     """Pure computation. Returns the AOI grid, {kind: array cropped+masked to the AOI}, timings."""
     t: dict[str, float] = {}
@@ -89,11 +105,14 @@ def compute_products(
     minx, miny, maxx, maxy = aoi_grid.bounds
     big = Grid.from_bounds((minx - m, miny - m, maxx + m, maxy + m), params.res)
 
+    step = on_step or (lambda _name: None)
+    step("dtm")
     t0 = time.perf_counter()
     dtm, counts = grid_dtm(pts, big, max_gap_m=params.max_gap_m, block=params.block)
     t["dtm"] = time.perf_counter() - t0
     full: dict[str, np.ndarray] = {"dtm": dtm}
     if "ground_density" in params.kinds:
+        step("density")
         full["ground_density"] = ground_density(counts, params.res, params.density_window_m)
     jobs = {
         "hillshade": lambda: vis.hillshade_multi(
@@ -105,6 +124,7 @@ def compute_products(
     }
     for kind, fn in jobs.items():
         if kind in params.kinds:
+            step(kind)
             t0 = time.perf_counter()
             full[kind] = fn()
             t[kind] = time.perf_counter() - t0
@@ -139,9 +159,14 @@ def process_aoi(
     crs_h: str | None = None,
     params: ProcessParams | None = None,
     keep_arrays: bool = False,
+    on_step: Callable[[str], None] | None = None,
+    extra_provenance: dict[str, Any] | None = None,
 ) -> ProcessResult:
+    """on_step(name) is called as each stage in `step_names(params)` starts (may raise to abort)."""
     params = params or ProcessParams()
     res = ProcessResult()
+    step = on_step or (lambda _name: None)
+    step("ground points")
     t0 = time.perf_counter()
     m = params.margin_m() + 20.0  # margin + interpolation buffer
     minx, miny, maxx, maxy = aoi_2180.bounds
@@ -151,7 +176,7 @@ def process_aoi(
         raise RuntimeError(
             f"only {len(pts)} class-2 ground points inside the AOI from {len(tile_paths)} file(s)"
         )
-    grid, arrays, timings = compute_products(pts, aoi_2180, params)
+    grid, arrays, timings = compute_products(pts, aoi_2180, params, on_step)
     res.timings.update(timings)
     if keep_arrays:
         res.arrays = arrays
@@ -167,6 +192,8 @@ def process_aoi(
         "parameters": {k: v for k, v in asdict(params).items() if k != "kinds"},
         "code_version": code_version(),
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "pipeline_version": PIPELINE_VERSION,
+        **(extra_provenance or {}),
         "crs_xy": "EPSG:2180",
         "crs_h": crs_h,
         "note": (
@@ -174,6 +201,7 @@ def process_aoi(
             "co-registered and must not be differenced without that step."
         ),
     }
+    step("write")
     for kind, arr in arrays.items():
         t1 = time.perf_counter()
         path = write_cog(out_dir / f"{kind}.tif", arr, grid.transform)

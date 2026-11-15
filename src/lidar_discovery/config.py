@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     seeds_dir: Path = Field(default=Path("seeds"))
     default_aoi_buffer_m: float = 1000.0
     http_timeout_s: float = 60.0
+    max_fetch_area_km2: float = 6.0  # "Get data for this view": viewport area limit
+    max_fetch_bytes: int = 4_000_000_000  # ... and total LAZ bytes (cached + to download)
     cors_origins: list[str] = Field(
         default=[
             "http://localhost:5173",

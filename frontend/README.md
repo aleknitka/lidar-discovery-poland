@@ -13,6 +13,17 @@ Contract: `../docs/08-architecture-contract.md`; types live in `src/api/types.ts
 Mock mode shims `fetch` for `/api/*` and renders synthetic tiles through a `mock://` MapLibre
 protocol (`src/api/mock.ts`). Fixtures are illustrative only. Created/edited candidates live in memory.
 
+## Get data for this view
+
+`components/AreaFetch.tsx` (button, estimate card, progress panel) is mounted in the Explore map.
+The button is disabled below zoom 13. Estimate: `GET /api/areas/estimate`; confirm: `POST
+/api/areas/fetch`; progress: `useJob` polls `GET /api/jobs/{id}` every second while the job is
+active; `useActiveJobs` re-attaches after a reload. Sheet footprints and the viewport rectangle are
+drawn through `MapView`'s `area` prop (colour = state). When a job finishes the `locations` and
+`layers` queries are invalidated and the new area is selected (its SVF layer turns on). Fetched
+areas (`properties.kind === 'area'`) appear under "Fetched areas". Formatting helpers: `src/lib/format.ts`.
+Mock mode simulates estimate + a ~10 s job (`src/api/mock.ts`).
+
 ## Checks
 
     npm run build && npm run lint && npx tsc --noEmit && npm test

@@ -54,6 +54,8 @@ export interface LocationProperties {
   provenance?: Provenance[];
   disclosure?: Disclosure;
   polygon?: Polygon | MultiPolygon | null;
+  /** 'village' (default) or 'area' (created by "Get data for this view"). */
+  kind?: 'village' | 'area';
 }
 export type LocationGeometry = Point | Polygon | MultiPolygon;
 export type Location = Feature<LocationGeometry, LocationProperties>;

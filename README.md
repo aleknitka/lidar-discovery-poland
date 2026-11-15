@@ -29,6 +29,23 @@ uv run ldp process carynskie --source gugik-kron86 --year 2012 --aoi point --aoi
 uv run ldp serve                                         # http://127.0.0.1:8000/docs
 ```
 
+### Get data for this view (viewport fetch)
+
+In the Explore view zoom in (13+), pan to an area and press "Get data for this view": you see an
+estimate (sheets, MB to download vs cached), confirm, and the app downloads only the whole map
+sheets (~1.2 km) intersecting the view, processes the viewport and shows its layers. Everything is
+cached: sheets by size in `data/raw/<source>/<year>/`, results by a processing cache key. Limits:
+`LDP_MAX_FETCH_AREA_KM2` (6) and `LDP_MAX_FETCH_BYTES` (4 GB). The CLI equivalent:
+
+```
+uv run ldp fetch-bbox 22.612 49.163 22.620 49.168 --source gugik-kron86 --year 2012 --estimate-only
+uv run ldp fetch-bbox 22.612 49.163 22.620 49.168 --source gugik-kron86 --year 2012
+```
+
+Endpoints: `GET /api/areas/estimate`, `POST /api/areas/fetch`, `GET /api/jobs`, `GET /api/jobs/{id}`,
+`POST /api/jobs/{id}/cancel` (see `docs/08-architecture-contract.md`). A killed server marks running
+jobs `failed: interrupted`; start the fetch again to resume from the `.part` files.
+
 Use `127.0.0.1` rather than `localhost` on Windows: resolving `localhost` via IPv6 first adds ~2 s per request.
 Tiles are ~100 MB (2012 KRON86) to ~600 MB (2023 EVRF2007); `ingest` skips tiles above `--max-mb` (400).
 Downloads are streamed to `*.part` and resumed; downloaded files are untrusted data, kept in
@@ -48,6 +65,7 @@ src/lidar_discovery/
                      resumable downloader, coverage
   processing/        points.py (laspy, class 2) -> dtm.py (blockwise TIN, density) -> vis.py
                      (hillshade, slope, SVF, LRM) -> cog.py -> pipeline.py (provenance, Product rows)
+  areas.py, jobs.py  viewport estimate + background fetch/process jobs (shared by API and CLI)
   api/               FastAPI app (app.py) and COG -> XYZ PNG rendering (tiles.py, rio-tiler)
   cli.py             `ldp`
 ```

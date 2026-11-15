@@ -61,6 +61,7 @@ def location_to_feature(loc: Location, has_products: bool | None = None) -> dict
         "aoi_buffer_m": loc.aoi_buffer_m,
         "polygon": json.loads(loc.polygon) if loc.polygon else None,
         "notes": loc.notes,
+        "kind": loc.kind,
     }
     if has_products is not None:
         props["has_products"] = has_products
