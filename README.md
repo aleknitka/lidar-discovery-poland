@@ -33,34 +33,25 @@ Early-stage research software (v0).
 
 **Requirements:** [uv](https://docs.astral.sh/uv/) (installs Python 3.12 for you), [Node.js](https://nodejs.org/) 20 or newer, and Git. Everything installs from prebuilt wheels and packages, so no GDAL or PDAL setup is needed. Tested on Windows 11.
 
-You run two processes: the Python API and the web app.
-
-**Terminal 1: API**
-
 ```bash
 git clone https://github.com/aleknitka/lidar-discovery-poland.git
 cd lidar-discovery-poland
 uv sync                              # creates .venv with Python 3.12
-uv run ldp locations import-seed     # loads the seed villages into data/catalog.sqlite
-uv run ldp serve                     # http://127.0.0.1:8000  (API docs at /docs)
+uv run ldp dev                       # starts the API and the web app, opens the browser
 ```
 
-**Terminal 2: web app**
+That one command installs the frontend packages on first run, loads the seed villages, starts the API (http://127.0.0.1:8000, docs at `/docs`) and the web app (http://127.0.0.1:5173), and opens **/explore**. Press Ctrl+C to stop both. If you have `make`, `make dev` does the same. `uv run ldp dev --mock` starts the web app alone with made-up data, and `--no-browser`, `--api-port` and `--web-port` are also available.
 
-```bash
-cd lidar-discovery-poland/frontend
-npm install
-npm run dev                          # http://127.0.0.1:5173
-```
+To run the two parts separately, use `uv run ldp serve` in one terminal and `npm install && npm run dev` in `frontend/` in another. The web app needs the API: without it you get a "bad gateway" error.
 
-Then open **http://127.0.0.1:5173/explore**:
+In the app, at **/explore**:
 
 1. Pan and zoom to an area of interest (zoom 13 or closer).
 2. Click **Get data for this view**. You get an estimate of the map sheets needed, MB to download and MB already cached. Pick the epoch (2012 sheets are about 100 MB each; 2023 sheets are denser and larger) and confirm.
 3. Watch the progress bar. When the job finishes, the area appears under **Fetched areas** with its sky-view-factor layer on. Use the layer switcher, the opacity slider and the swipe compare to inspect it.
 4. Mark candidate features on the map and record their type, confidence, evidence and disclosure level.
 
-Use `127.0.0.1` rather than `localhost` on Windows: resolving `localhost` through IPv6 adds about 2 s per request. To try the UI without the API, run `npm run dev:mock`, which uses made-up fixture data.
+Use `127.0.0.1` rather than `localhost` on Windows: resolving `localhost` through IPv6 adds about 2 s per request.
 
 Downloaded and processed data lives in `data/` (git-ignored). Map sheets are downloaded once and reused; processed views are cached by area, epoch and parameters.
 

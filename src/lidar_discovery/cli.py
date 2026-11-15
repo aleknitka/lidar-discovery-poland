@@ -369,5 +369,20 @@ def serve(
     )
 
 
+@app.command()
+def dev(
+    api_port: Annotated[int, typer.Option(help="API port.")] = 8000,
+    web_port: Annotated[int, typer.Option(help="Web app port.")] = 5173,
+    no_browser: Annotated[bool, typer.Option("--no-browser", help="Don't open a browser.")] = False,
+    mock: Annotated[bool, typer.Option(help="Web app only, with fixture data (no API).")] = False,
+) -> None:
+    """Start the API and the web app together (one command) and open the browser."""
+    from lidar_discovery.devserver import run_dev
+
+    raise typer.Exit(
+        run_dev(api_port=api_port, web_port=web_port, open_browser=not no_browser, mock=mock)
+    )
+
+
 if __name__ == "__main__":
     app()
