@@ -16,6 +16,7 @@ import LayerControl, {
 import LocationList from '../components/LocationList';
 import AreaFetchPanel, { FetchButton, useAreaFetch } from '../components/AreaFetch';
 import InfoTab from '../components/InfoTab';
+import MissingLayers from '../components/MissingLayers';
 import SidePanel, { PanelOpenButton, isTabId, type TabId } from '../components/SidePanel';
 import CoveragePanel from '../components/CoveragePanel';
 import CandidatePanel, { type DrawMode, type DrawState } from '../components/CandidatePanel';
@@ -226,6 +227,14 @@ export default function Explore() {
                   setInfo({ kind: l.kind, layerId: l.id });
                   setTab('info');
                 }}
+              />
+            )}
+            {locationId && !layersQ.isLoading && (
+              <MissingLayers
+                location={feature}
+                layers={layers}
+                fetch={fetchState}
+                onStarted={() => openTab('data')}
               />
             )}
           </div>

@@ -375,9 +375,9 @@ export interface LayerChoice {
 export const LAYER_CHOICES: LayerChoice[] = [
   { kind: 'dtm', required: true, defaultOn: true, note: 'required by all others' },
   { kind: 'hillshade', defaultOn: true },
-  { kind: 'slope', defaultOn: false },
+  { kind: 'slope', defaultOn: true },
   { kind: 'svf', defaultOn: true },
-  { kind: 'lrm', defaultOn: false },
+  { kind: 'lrm', defaultOn: true },
   { kind: 'ground_density', defaultOn: true },
 ];
 

@@ -40,7 +40,9 @@ DISPLAY_RANGES = {
 # Every product kind the pipeline can build, in processing order. The DTM is the input of all
 # the others, so it is always built (or reused).
 ALL_KINDS: tuple[str, ...] = ("dtm", "hillshade", "slope", "svf", "lrm", "ground_density")
-DEFAULT_LAYERS: tuple[str, ...] = ("dtm", "hillshade", "svf", "ground_density")
+# Everything by default: once the DTM exists each extra layer costs seconds, and an area with
+# only some layers is confusing. Users can still untick layers to save time and disk.
+DEFAULT_LAYERS: tuple[str, ...] = ALL_KINDS
 VIS_KINDS: tuple[str, ...] = ("hillshade", "slope", "svf", "lrm")
 
 

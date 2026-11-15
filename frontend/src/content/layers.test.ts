@@ -108,7 +108,14 @@ describe('layer choices', () => {
   });
 
   it('defaults to DTM, shaded relief, sky-view factor and ground-point density', () => {
-    expect([...DEFAULT_LAYERS].sort()).toEqual(['dtm', 'ground_density', 'hillshade', 'svf']);
+    expect([...DEFAULT_LAYERS].sort()).toEqual([
+      'dtm',
+      'ground_density',
+      'hillshade',
+      'lrm',
+      'slope',
+      'svf',
+    ]);
   });
 
   it('builds the layers parameter in canonical order and always with the DTM', () => {

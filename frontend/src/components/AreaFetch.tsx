@@ -3,7 +3,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import type { FeatureCollection } from 'geojson';
 import { api, ApiError } from '../api/client';
 import { isActiveJob, useActiveJobs, useJob } from '../api/hooks';
-import type { AreaEstimate, BBox, Job } from '../api/areaTypes';
+import type { AreaEstimate, BBox, FetchRequest, Job } from '../api/areaTypes';
 import type { Bounds } from '../lib/geo';
 import { polygonShareInside, viewAreaKm2 } from '../lib/geo';
 import {
@@ -84,6 +84,10 @@ export interface AreaFetchState {
   open: () => void;
   close: () => void;
   start: (est: AreaEstimate) => void;
+  /** Build more layers for an area that already exists (reuses the stored data; no download). */
+  buildLayers: (p: { bbox: BBox; source_id: string; year: number; layers: string[] }) => void;
+  /** True while a fetch job is working; false once it finished, failed or was cancelled. */
+  running: boolean;
   starting: boolean;
   startError: string | null;
   cancel: () => void;
@@ -104,7 +108,9 @@ export function useAreaFetch(
   const [frozen, setFrozen] = useState<BBox | null>(null);
   const [epoch, setEpoch] = useState<Epoch>(null);
   const [layers, setLayers] = usePersistentState<string[]>(
-    'ldp.fetch.layers',
+    // v2: the first version defaulted to four layers and saved that choice in the browser, so
+    // older areas were missing slope and local relief. Bumping the key resets everyone to "all".
+    'ldp.fetch.layers.v2',
     [...DEFAULT_LAYERS],
     isLayerSet,
   );
@@ -122,13 +128,7 @@ export function useAreaFetch(
   }, [active.data, jobId]);
 
   const startM = useMutation({
-    mutationFn: (est: AreaEstimate) =>
-      api.fetchArea({
-        bbox: est.bbox,
-        source_id: est.source_id,
-        year: est.year,
-        layers: layersParam(layers),
-      }),
+    mutationFn: (p: FetchRequest) => api.fetchArea(p),
     onSuccess: (j) => {
       setFrozen(null);
       setJobId(j.id);
@@ -141,6 +141,10 @@ export function useAreaFetch(
   });
 
   const j = job.data;
+  // A remembered job that no longer exists (server restarted, data wiped) must not block fetching.
+  useEffect(() => {
+    if (jobId && job.isError) setJobId(null);
+  }, [jobId, job.isError]);
   useEffect(() => {
     if (j?.state === 'done' && j.location_id && handled.current !== j.id) {
       handled.current = j.id;
@@ -175,9 +179,14 @@ export function useAreaFetch(
     setLayers,
     jobId,
     job: j,
+    // True only while a job is actually working. A finished job keeps its progress card until it
+    // is dismissed, but it must never stop the next download (it used to: the button stayed
+    // disabled after the first area until you pressed Dismiss).
+    running: !!jobId && (!j || isActiveJob(j)),
     open: () => {
       if (!view) return;
       const b = [...view.bounds] as BBox;
+      setJobId(null);
       setEpoch(null);
       setFrozen(b);
       setFocus({ bounds: b, key: `${b.join(',')}@${Date.now()}` });
@@ -187,7 +196,14 @@ export function useAreaFetch(
       setEpoch(null);
       onOverlay(null);
     },
-    start: (est) => startM.mutate(est),
+    start: (est) =>
+      startM.mutate({
+        bbox: est.bbox,
+        source_id: est.source_id,
+        year: est.year,
+        layers: layersParam(layers),
+      }),
+    buildLayers: (p) => startM.mutate({ ...p, layers: layersParam(p.layers) }),
     starting: startM.isPending,
     startError: startM.error ? startM.error.message : null,
     cancel: () => j && cancelM.mutate(j.id),
@@ -205,7 +221,7 @@ export function useAreaFetch(
 // ------------------------------------------------------------------------ map button
 /** Floating button on the map. */
 export function FetchButton({ fetch, onOpened }: { fetch: AreaFetchState; onOpened: () => void }) {
-  const busy = !!fetch.jobId || !!fetch.frozen;
+  const busy = fetch.running || !!fetch.frozen;
   return (
     <div className="map-action">
       <button
