@@ -29,6 +29,8 @@ class Settings(BaseSettings):
             "http://127.0.0.1:3000",
         ]
     )
+    watch_interval_s: int = 86400
+    watch_bbox: str | None = None
 
     @property
     def raw_dir(self) -> Path:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Annotated
@@ -22,6 +23,8 @@ from lidar_discovery.sources.coverage import compute_coverage, group_tiles
 app = typer.Typer(help="Desk-only LiDAR processing framework.", no_args_is_help=True)
 locations_app = typer.Typer(help="Manage locations.", no_args_is_help=True)
 app.add_typer(locations_app, name="locations")
+ml_app = typer.Typer(help="ML detection commands.", no_args_is_help=True)
+app.add_typer(ml_app, name="ml")
 
 AoiOpt = Annotated[
     str, typer.Option("--aoi", help="auto = precinct polygon if present, else point buffer; point")
@@ -41,6 +44,20 @@ def _need_location(session, loc_id: str) -> Location:
         typer.echo(f"unknown location {loc_id!r}; try `ldp locations list`", err=True)
         raise typer.Exit(2)
     return loc
+
+
+def _parse_interval_to_s(text: str) -> int:
+    s = text.strip()
+    if s.isdigit():
+        return int(s)
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*([smhd])$", s.lower())
+    if m:
+        mul = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+        return int(float(m.group(1)) * mul)
+    try:
+        return int(float(s))
+    except ValueError:
+        raise typer.BadParameter(f"invalid interval {text!r} (examples: 24h, 3600, 1d)") from None
 
 
 class _Progress:
@@ -293,6 +310,13 @@ def fetch_bbox(
             "processing time and disk, not the LAZ download size."
         ),
     ] = None,
+    auto_detect: Annotated[
+        bool,
+        typer.Option(
+            "--auto-detect",
+            help="After processing, run channels derive + rules/anomaly -> Candidate chips.",
+        ),
+    ] = False,
 ) -> None:
     """Download only the sheets covering a WGS84 bbox, then process it (same code as the UI)."""
     import threading
@@ -337,7 +361,7 @@ def fetch_bbox(
         typer.echo(f"  {t['godlo']:28} {(t['size_bytes'] or 0) / 1e6:7.0f} MB  {state}")
     if estimate_only or not est["tiles"]:
         raise typer.Exit(0 if est["tiles"] or estimate_only else 1)
-    job, _ = jobs.create_fetch_job(s, bbox, est["source_id"], est["year"], layers)
+    job, _ = jobs.create_fetch_job(s, bbox, est["source_id"], est["year"], layers, auto_detect)
     cancel = threading.Event()
     th = threading.Thread(target=jobs.run_fetch_job, args=(s, job.id, cancel), daemon=True)
     th.start()
@@ -371,6 +395,168 @@ def fetch_bbox(
         f"{j['state']}: {j['message'] or ''} {j['error'] or ''} (location {j['location_id']})"
     )
     raise typer.Exit(0 if j["state"] == "done" else 1)
+
+
+# ------------------------------------------------------------------- watch
+@app.command("watch")
+def watch_cmd(
+    bbox: Annotated[
+        str | None,
+        typer.Option(
+            "--bbox",
+            help="W,S,E,N bbox in WGS84 (default: Bieszczady 22.10,49.00,22.95,49.70).",
+        ),
+    ] = None,
+    interval: Annotated[
+        str,
+        typer.Option("--interval", help="Poll interval (e.g. 24h, 1h, 3600s)."),
+    ] = "24h",
+    once: Annotated[bool, typer.Option("--once", help="Run one poll and exit.")] = False,
+) -> None:
+    """Poll seeds + PRG precincts, diff WFS caps + provenance freshness (30d), enqueue fetch-area jobs."""
+    from lidar_discovery.watch import WatchScheduler
+
+    s = _settings()
+    interval_s = _parse_interval_to_s(interval)
+    bbox_t: tuple[float, float, float, float] | None = None
+    if bbox:
+        try:
+            parts = [float(x.strip()) for x in bbox.split(",")]
+            if len(parts) != 4:
+                raise ValueError
+            bbox_t = (parts[0], parts[1], parts[2], parts[3])
+        except Exception:
+            typer.echo("invalid --bbox, expected W,S,E,N", err=True)
+            raise typer.Exit(2) from None
+    sched = WatchScheduler(settings=s, interval_s=interval_s, bbox=bbox_t)
+    if once:
+        res = sched.poll_once()
+        typer.echo(json.dumps(res, indent=2))
+        raise typer.Exit(0)
+    sched.start()
+    typer.echo(f"watch running: bbox={sched.bbox} interval={interval_s}s (Ctrl-C to stop)")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        sched.stop()
+        typer.echo("watch stopped")
+
+
+# ---------------------------------------------------------------------- ml
+@ml_app.command("channels")
+def ml_channels(
+    location: str,
+    epoch: Annotated[int | None, typer.Option("--epoch", help="Epoch year (default: newest).")] = None,
+) -> None:
+    """Derive lrm5 / fill_depth / support COGs and register Products."""
+    s = _settings()
+    with session_scope(s) as session:
+        _need_location(session, location)
+    try:
+        from lidar_discovery.ml.channels import derive_channels
+    except Exception as e:
+        typer.echo(f"channels module not available: {e}", err=True)
+        typer.echo("Install ml extras or check src/lidar_discovery/ml/channels.py", err=True)
+        raise typer.Exit(1) from None
+    try:
+        if epoch is not None:
+            res = derive_channels(s, location, epoch)
+        else:
+            res = derive_channels(s, location)
+    except Exception as e:
+        typer.echo(f"channels failed: {e}", err=True)
+        raise typer.Exit(1) from None
+    typer.echo(json.dumps(res if isinstance(res, dict) else {"result": str(res)}, indent=2))
+
+
+@ml_app.command("train-ae")
+def ml_train_ae(
+    locations: Annotated[str | None, typer.Option("--locations", help="Comma-separated location ids.")] = None,
+    epochs: Annotated[int, typer.Option("--epochs", help="Training epochs.")] = 10,
+    out: Annotated[str | None, typer.Option("--out", help="Output model dir.")] = None,
+) -> None:
+    """Train unsupervised autoencoder on random forest-floor patches."""
+    try:
+        from lidar_discovery.ml.models.autoencoder import train as train_ae  # type: ignore[import-not-found]
+    except Exception as e:
+        typer.echo(f"autoencoder not available (install ml extras): {e}", err=True)
+        raise typer.Exit(1) from None
+    s = _settings()
+    locs = [x.strip() for x in locations.split(",")] if locations else None
+    try:
+        res = train_ae(s, locations=locs, epochs=epochs, out_dir=Path(out) if out else None)
+    except TypeError:
+        # fallback signature
+        res = train_ae(s)
+    typer.echo(json.dumps(res if isinstance(res, dict) else {"result": str(res)}, indent=2))
+
+
+@ml_app.command("predict")
+def ml_predict(
+    location: str,
+    model: Annotated[str | None, typer.Option("--model", help="Model version.")] = None,
+    budget: Annotated[int | None, typer.Option("--budget", help="Candidates per km².")] = None,
+) -> None:
+    """Score candidates / sliding window -> Candidates."""
+    try:
+        from lidar_discovery.ml.predict import predict as do_predict  # type: ignore[import-not-found]
+    except Exception as e:
+        typer.echo(f"predict not available: {e}", err=True)
+        raise typer.Exit(1) from None
+    s = _settings()
+    try:
+        res = do_predict(s, location, model_version=model, budget=budget)
+    except TypeError:
+        res = do_predict(s, location)
+    typer.echo(json.dumps(res if isinstance(res, dict) else {"result": str(res)}, indent=2))
+
+
+@ml_app.command("evaluate")
+def ml_evaluate(
+    model: Annotated[str | None, typer.Option("--model", help="Model version.")] = None,
+    villages: Annotated[str | None, typer.Option("--villages", help="Comma-separated village ids.")] = None,
+    redteam: Annotated[str | None, typer.Option("--redteam", help="Red-team suite (all).")] = None,
+) -> None:
+    """Evaluate model metrics + intervals + markdown report."""
+    try:
+        from lidar_discovery.ml.evaluate import evaluate as do_evaluate  # type: ignore[import-not-found]
+    except Exception as e:
+        typer.echo(f"evaluate not available: {e}", err=True)
+        raise typer.Exit(1) from None
+    s = _settings()
+    vlist = [x.strip() for x in villages.split(",")] if villages else None
+    try:
+        res = do_evaluate(s, model_version=model, villages=vlist, redteam=redteam)
+    except TypeError:
+        res = do_evaluate(s, model_version=model)
+    if isinstance(res, dict):
+        typer.echo(json.dumps(res, indent=2))
+    elif isinstance(res, str):
+        typer.echo(res)
+    else:
+        typer.echo(str(res))
+
+
+@ml_app.command("card")
+def ml_card(
+    version: Annotated[str, typer.Argument(help="Model version.")],
+) -> None:
+    """Render model card (intended use, training villages, metrics, etc.)."""
+    try:
+        from lidar_discovery.ml.registry import render_card  # type: ignore[import-not-found]
+    except Exception as e:
+        typer.echo(f"registry not available: {e}", err=True)
+        raise typer.Exit(1) from None
+    s = _settings()
+    try:
+        out = render_card(s, version)
+    except TypeError:
+        out = render_card(version)
+    if isinstance(out, dict):
+        typer.echo(json.dumps(out, indent=2))
+    else:
+        typer.echo(str(out))
 
 
 @app.command()

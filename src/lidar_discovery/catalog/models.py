@@ -86,6 +86,7 @@ class Candidate(SQLModel, table=True):
     review_status: str = "proposed"
     reviewer_notes: str = ""
     disclosure: str = "public"
+    provenance: str = "{}"  # JSON {input Product IDs+hashes, DTM recipe hash, channel spec hash, git SHA, chips, model_score, score_sd, low_support}
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
