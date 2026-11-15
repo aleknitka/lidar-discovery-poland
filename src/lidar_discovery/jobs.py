@@ -146,10 +146,9 @@ def create_fetch_job(
     source_id: str | None,
     year: int | None,
     layers: str | list[str] | tuple[str, ...] | None = None,
+    auto_detect: bool = False,
 ) -> tuple[Job, bool]:
-    """Create a queued job. Returns (job, created); an identical active job is reused.
-    `layers` = product kinds to build (default: DTM, hillshade, SVF, ground density; the DTM is
-    always included). Unknown kinds raise AreaError (HTTP 422)."""
+    """Create a queued job. Returns (job, created); an identical active job is reused."""
     try:
         want = normalise_layers(layers)
     except ValueError as e:
@@ -171,7 +170,14 @@ def create_fetch_job(
                 }
             },
         )
-    params = {"bbox": list(bbox), "source_id": source_id, "year": year, "layers": list(want)}
+    params: dict[str, Any] = {
+        "bbox": list(bbox),
+        "source_id": source_id,
+        "year": year,
+        "layers": list(want),
+    }
+    if auto_detect:
+        params["auto_detect"] = True
     for j in list_jobs(settings, active=True, limit=100):
         if j.kind == "fetch-area" and json.loads(j.params) == params:
             return j, False
@@ -286,6 +292,244 @@ def _download_tile(tracker: Tracker, settings: Settings, tile_ref, tile: dict[st
         tracker.flush(None, force=True)
 
 
+def on_job_done(settings: Settings, job: Job) -> None:
+    """Post-process hook: derive channels -> rule/anomaly -> chips -> Candidate rows.
+
+    Never runs when public_mode is on. Degrades gracefully if ml deps are missing.
+    """
+    if settings.public_mode:
+        return
+    if job.state != "done":
+        return
+    try:
+        params = json.loads(job.params)
+    except Exception:
+        return
+    if not params.get("auto_detect"):
+        return
+    loc_id = job.location_id
+    if not loc_id:
+        return
+    import hashlib as _hashlib
+    import logging as _log
+
+    _logger = _log.getLogger(__name__)
+    try:
+        from lidar_discovery.catalog import repo as _repo
+        from lidar_discovery.catalog.db import session_scope as _ss
+        from lidar_discovery.catalog.models import Candidate
+        from lidar_discovery.catalog.models import dumps as _dumps
+        from lidar_discovery.processing.pipeline import PIPELINE_VERSION, code_version
+
+        with _ss(settings) as s:
+            products = _repo.list_products(s, loc_id)
+        input_ids = [p.id for p in products]
+        git_sha = ""
+        try:
+            git_sha = code_version()
+        except Exception:
+            git_sha = ""
+        base_prov: dict[str, Any] = {
+            "input_product_ids": input_ids,
+            "pipeline_version": PIPELINE_VERSION,
+            "git_sha": git_sha,
+            "job_id": job.id,
+        }
+        try:
+            import inspect as _ins
+
+            import lidar_discovery.ml.channels as _ch  # type: ignore[import-not-found]
+
+            spec = _ins.getsource(_ch)
+            base_prov["channel_spec_hash"] = _hashlib.sha256(spec.encode()).hexdigest()[:12]
+        except Exception:
+            base_prov["channel_spec_hash"] = None
+        try:
+            import lidar_discovery.ml.channels as _ch2  # type: ignore[import-not-found]
+
+            if hasattr(_ch2, "derive_channels"):
+                _ch2.derive_channels(settings, loc_id)
+            elif hasattr(_ch2, "derive"):
+                _ch2.derive(settings, loc_id)
+        except Exception as e:
+            _logger.debug("derive_channels skipped: %s", e)
+
+        arrays: dict[str, Any] = {}
+        grid = None
+        try:
+            import rasterio as _rio  # type: ignore[import-not-found]
+
+            from lidar_discovery.processing.dtm import Grid as _Grid
+
+            with _ss(settings) as s:
+                prods = {p.kind: p for p in _repo.list_products(s, loc_id)}
+            if "dtm" in prods:
+                dtm_path = settings.data_dir / prods["dtm"].path
+                with _rio.open(dtm_path) as ds:
+                    grid = _Grid(
+                        x0=ds.transform.c,
+                        y1=ds.transform.f,
+                        res=ds.res[0],
+                        width=ds.width,
+                        height=ds.height,
+                    )
+                    dtm = ds.read(1).astype(float)
+                    if ds.nodata is not None:
+                        dtm[dtm == ds.nodata] = float("nan")
+                    arrays["dtm"] = dtm
+                for k in (
+                    "hillshade",
+                    "slope",
+                    "svf",
+                    "lrm",
+                    "ground_density",
+                    "lrm5",
+                    "fill_depth",
+                    "support",
+                ):
+                    if k in prods:
+                        try:
+                            pth = settings.data_dir / prods[k].path
+                            with _rio.open(pth) as ds:
+                                a = ds.read(1).astype(float)
+                                if ds.nodata is not None:
+                                    a[a == ds.nodata] = float("nan")
+                                arrays[k] = a
+                        except Exception:
+                            continue
+        except Exception as e:
+            _logger.debug("array load skipped: %s", e)
+
+        candidates_raw: list[dict[str, Any]] = []
+        try:
+            import lidar_discovery.detect.rules as _rules  # type: ignore[import-not-found]
+
+            if arrays and grid is not None:
+                for fn_name in (
+                    "detect_closed_depressions",
+                    "detect_lrm_blobs",
+                    "detect_linears",
+                    "detect_all",
+                ):
+                    fn = getattr(_rules, fn_name, None)
+                    if fn is None:
+                        continue
+                    try:
+                        out = fn(arrays, grid)
+                        if isinstance(out, list):
+                            candidates_raw.extend([c for c in out if isinstance(c, dict)])
+                        elif isinstance(out, dict) and "candidates" in out:
+                            candidates_raw.extend(out["candidates"])
+                    except Exception as e:
+                        _logger.debug("rule %s failed: %s", fn_name, e)
+                    if fn_name == "detect_all":
+                        break
+        except Exception as e:
+            _logger.debug("rules import skipped: %s", e)
+
+        try:
+            import lidar_discovery.detect.anomaly as _anom  # type: ignore[import-not-found]
+
+            if arrays and grid is not None and hasattr(_anom, "detect_anomalies"):
+                try:
+                    out = _anom.detect_anomalies(arrays, grid)
+                    if isinstance(out, list):
+                        candidates_raw.extend([c for c in out if isinstance(c, dict)])
+                except Exception as e:
+                    _logger.debug("anomaly failed: %s", e)
+            elif arrays and hasattr(_anom, "anomaly_map"):
+                try:
+                    amap = _anom.anomaly_map(arrays)
+                    if isinstance(amap, dict) and "candidates" in amap:
+                        candidates_raw.extend(amap["candidates"])
+                except Exception as e:
+                    _logger.debug("anomaly_map failed: %s", e)
+        except Exception as e:
+            _logger.debug("anomaly import skipped: %s", e)
+
+        if not candidates_raw:
+            _logger.info("auto-detect: no candidates for %s", loc_id)
+            return
+
+        from pyproj import Transformer as _Tr
+
+        _to_4326 = _Tr.from_crs(2180, 4326, always_xy=True)
+        import uuid as _uuid
+
+        created = 0
+        for raw in candidates_raw[:200]:
+            try:
+                geom = raw.get("geometry")
+                if geom is None:
+                    if "lon" in raw and "lat" in raw:
+                        geom = {
+                            "type": "Point",
+                            "coordinates": [float(raw["lon"]), float(raw["lat"])],
+                        }
+                    elif "x" in raw and "y" in raw and grid is not None:
+                        lon, lat = _to_4326.transform(float(raw["x"]), float(raw["y"]))
+                        geom = {"type": "Point", "coordinates": [lon, lat]}
+                    else:
+                        continue
+                low_support = bool(raw.get("low_support", False))
+                score = raw.get("score", raw.get("model_score", raw.get("confidence", 0.0)))
+                try:
+                    score_f = float(score)
+                except Exception:
+                    score_f = 0.0
+                prov = dict(base_prov)
+                prov["score"] = score_f
+                prov["score_sd"] = raw.get("score_sd")
+                prov["low_support"] = low_support
+                prov["morph_class_raw"] = raw.get("morph_class")
+                prov["detector"] = raw.get("origin", raw.get("detector", "rule"))
+                if "chips" in raw:
+                    prov["chips"] = raw["chips"]
+                morph = raw.get("morph_class", "other")
+                from lidar_discovery.catalog.models import MORPH_CLASSES as _MC
+
+                if morph not in _MC:
+                    morph = "other"
+                cand = Candidate(
+                    id=_uuid.uuid4().hex[:12],
+                    location_id=loc_id,
+                    geometry=_dumps(geom),
+                    morph_class=morph,
+                    reality="unassessed",
+                    reality_confidence=max(0.0, min(1.0, score_f)) if 0 <= score_f <= 1 else 0.0,
+                    origin=raw.get("origin", "rule"),
+                    model_version=raw.get("model_version", PIPELINE_VERSION),
+                    review_status="proposed",
+                    disclosure="restricted",
+                    provenance=_dumps(prov),
+                )
+                with _ss(settings) as s:
+                    s.add(cand)
+                    s.commit()
+                try:
+                    from lidar_discovery.chips import export_chips_for_candidate as _ecc
+
+                    chips = _ecc(settings, cand, arrays, grid)  # type: ignore[arg-type]
+                    if chips:
+                        with _ss(settings) as s2:
+                            row = s2.get(Candidate, cand.id)
+                            if row is not None:
+                                p2prov = json.loads(row.provenance) if row.provenance else {}
+                                p2prov["chips"] = chips
+                                row.provenance = _dumps(p2prov)
+                                s2.add(row)
+                                s2.commit()
+                except Exception as e:
+                    _logger.debug("chip export failed for %s: %s", cand.id, e)
+                created += 1
+            except Exception as e:
+                _logger.debug("candidate create failed: %s", e)
+                continue
+        _logger.info("auto-detect: created %d candidates for %s", created, loc_id)
+    except Exception as e:
+        _log.getLogger(__name__).warning("on_job_done failed: %s", e)
+
+
 def run_fetch_job(
     settings: Settings,
     job_id: str,
@@ -328,7 +572,14 @@ def run_fetch_job(
         missing = [k for k in want if k not in existing]
         if not missing:  # everything requested exists: instant
             ensure_area_location(settings, bbox, aoi, key)
-            return notify(state="done", message="cached", step=0, steps=0)
+            j = notify(state="done", message="cached", step=0, steps=0)
+            try:
+                pj = json.loads(j.params)
+                if pj.get("auto_detect"):
+                    on_job_done(settings, j)
+            except Exception:
+                pass
+            return j
         # the DTM is the expensive part: reuse it when it exists
         reuse_dtm = "dtm" in existing
         kinds = tuple(missing) if reuse_dtm else want
@@ -404,7 +655,14 @@ def run_fetch_job(
 
         paths = [tile_path(settings, r) for r in refs]
         result = process_aoi(
-            settings, lid, aoi, sid, year, paths, chosen.get("crs_h"), params,
+            settings,
+            lid,
+            aoi,
+            sid,
+            year,
+            paths,
+            chosen.get("crs_h"),
+            params,
             on_step=on_step,
             extra_provenance={
                 "cache_key": key,
@@ -416,10 +674,21 @@ def run_fetch_job(
         with session_scope(settings) as s:
             for prod in result.products:
                 repo.add_product(s, prod)
-        return notify(
-            state="done", message="done", step=len(names), step_name=None, current_item=None,
+        done_job = notify(
+            state="done",
+            message="done",
+            step=len(names),
+            step_name=None,
+            current_item=None,
             bytes_done=total,
         )  # fmt: skip
+        try:
+            pj2 = json.loads(done_job.params)
+            if pj2.get("auto_detect"):
+                on_job_done(settings, done_job)
+        except Exception:
+            pass
+        return done_job
     except JobCancelled:
         return notify(state="cancelled", message="cancelled", current_item=None)
     except Exception as e:

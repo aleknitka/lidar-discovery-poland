@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlmodel import Session
 
 from lidar_discovery import __version__, areas, jobs
@@ -130,6 +130,7 @@ def layer_tile(
     x: int,
     y: int,
     shade: float = Query(default=0.0, ge=0.0, le=1.0),
+    colormap: str | None = Query(default=None, description="viridis|grey for heatmaps"),
     session: Session = Depends(get_session),
     cfg: Settings = Depends(get_cfg),
 ) -> Response:
@@ -145,7 +146,7 @@ def layer_tile(
     if not (0 <= z <= 24) or not (0 <= x < 2**z) or not (0 <= y < 2**z):
         raise HTTPException(400, "invalid tile coordinates")
     rng = json.loads(prod.provenance).get("display_range")
-    png = render_tile(path, prod.kind, tuple(rng) if rng else None, z, x, y, shade)
+    png = render_tile(path, prod.kind, tuple(rng) if rng else None, z, x, y, shade, colormap)
     return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
@@ -184,7 +185,10 @@ def areas_fetch(
         layers = body.get("layers")
         if layers is not None and not isinstance(layers, str | list):
             raise areas.AreaError("layers must be a comma-separated string or a list")
-        job, created = jobs.create_fetch_job(cfg, bbox, body.get("source_id"), year, layers)
+        auto_detect = bool(body.get("auto_detect"))
+        job, created = jobs.create_fetch_job(
+            cfg, bbox, body.get("source_id"), year, layers, auto_detect
+        )
     except areas.AreaError as e:
         return _area_error(e)
     if created:
@@ -286,20 +290,283 @@ def patch_candidate(
     return repo.candidate_to_feature(c)
 
 
+# ---- chips ----
+@router.get("/candidates/{cand_id}/chips")
+def candidate_chips(
+    cand_id: str, session: Session = Depends(get_session), cfg: Settings = Depends(get_cfg)
+) -> dict[str, Any]:
+    from lidar_discovery.catalog.models import Candidate
+
+    c = session.get(Candidate, cand_id)
+    f = apply_to_feature(repo.candidate_to_feature(c), cfg.public_mode) if c else None
+    if f is None:
+        raise HTTPException(404, f"candidate {cand_id!r} not found")
+    prov = {}
+    try:
+        prov = json.loads(c.provenance) if c.provenance else {}
+    except Exception:
+        prov = {}
+    chips = prov.get("chips") or {}
+    # return absolute URLs for convenience
+    base = f"/api/candidates/{cand_id}/chips"
+    return {
+        "candidate_id": cand_id,
+        "chips": chips,
+        "urls": {k: f"{base}/{k}" for k in chips},
+    }
+
+
+@router.get("/candidates/{cand_id}/chips/{kind}")
+def candidate_chip_image(
+    cand_id: str,
+    kind: str,
+    session: Session = Depends(get_session),
+    cfg: Settings = Depends(get_cfg),
+) -> Any:
+    from lidar_discovery.catalog.models import Candidate
+
+    c = session.get(Candidate, cand_id)
+    f = apply_to_feature(repo.candidate_to_feature(c), cfg.public_mode) if c else None
+    if f is None:
+        raise HTTPException(404, f"candidate {cand_id!r} not found")
+    prov: dict[str, Any] = {}
+    try:
+        prov = json.loads(c.provenance) if c.provenance else {}
+    except Exception:
+        prov = {}
+    chips: dict[str, str] = prov.get("chips") or {}
+    # allow kind with or without _256 suffix
+    rel = chips.get(kind)
+    if rel is None:
+        # fuzzy match: hillshade vs hillshade_256
+        for k, v in chips.items():
+            if k == kind or k.startswith(kind):
+                rel = v
+                break
+    if rel is None:
+        raise HTTPException(404, f"chip {kind!r} not found for candidate {cand_id!r}")
+    p = cfg.data_dir / rel
+    if not p.exists():
+        raise HTTPException(404, "chip file missing on disk")
+    return FileResponse(str(p), media_type="image/png")
+
+
+@router.get("/chips/{location_id}/{candidate_id}/{filename}")
+def chip_direct(
+    location_id: str,
+    candidate_id: str,
+    filename: str,
+    cfg: Settings = Depends(get_cfg),
+) -> Any:
+    # Validate filename to avoid traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(400, "invalid chip filename")
+    p = cfg.data_dir / "chips" / location_id / candidate_id / filename
+    if not p.exists():
+        raise HTTPException(404, "chip not found")
+    # disclosure check via candidate if present
+    try:
+        from sqlmodel import Session as _Session
+
+        from lidar_discovery.catalog.db import get_engine as _get_engine
+        from lidar_discovery.catalog.models import Candidate
+
+        with _Session(_get_engine(cfg), expire_on_commit=False) as s:
+            c = s.get(Candidate, candidate_id)
+            if c is not None:
+                f = apply_to_feature(repo.candidate_to_feature(c), cfg.public_mode)
+                if f is None:
+                    raise HTTPException(404, "chip not found")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    return FileResponse(str(p), media_type="image/png")
+
+
+# ---- watch ----
+@router.get("/watch/status")
+def watch_status(request: Request, cfg: Settings = Depends(get_cfg)) -> dict[str, Any]:
+    sched = getattr(request.app.state, "watch", None)
+    if sched is None:
+        return {"running": False, "interval_s": cfg.watch_interval_s, "bbox": None}
+    try:
+        return sched.status()
+    except Exception as e:
+        return {"running": False, "error": str(e)}
+
+
+@router.post("/watch/trigger")
+def watch_trigger(request: Request, cfg: Settings = Depends(get_cfg)) -> dict[str, Any]:
+    _no_writes_in_public(cfg)
+    sched = getattr(request.app.state, "watch", None)
+    if sched is None:
+        # one-shot without daemon
+        try:
+            from lidar_discovery.watch import WatchScheduler
+
+            tmp = WatchScheduler(settings=cfg, runner=getattr(request.app.state, "runner", None))
+            return tmp.poll_once()
+        except Exception as e:
+            raise HTTPException(500, str(e)) from None
+    try:
+        return sched.trigger()
+    except Exception as e:
+        raise HTTPException(500, str(e)) from None
+
+
+# ---- ml stubs ----
+@router.get("/ml/models")
+def ml_models(cfg: Settings = Depends(get_cfg)) -> list[dict[str, Any]]:
+    try:
+        from lidar_discovery.ml.registry import list_models  # type: ignore[import-not-found]
+
+        return list_models(cfg)  # type: ignore[no-any-return]
+    except Exception:
+        return []
+
+
+@router.get("/ml/channels/{location_id}")
+def ml_channels_status(
+    location_id: str, session: Session = Depends(get_session), cfg: Settings = Depends(get_cfg)
+) -> dict[str, Any]:
+    _location_or_404(session, cfg, location_id)
+    prods = repo.list_products(session, location_id)
+    by_kind = {p.kind: p for p in prods}
+    return {
+        "location_id": location_id,
+        "has": {k: (k in by_kind) for k in ("lrm5", "fill_depth", "support")},
+        "products": [repo.product_to_layer(p) for p in prods if p.kind in ("lrm5", "fill_depth", "support")],
+    }
+
+
+@router.post("/ml/predict/{location_id}")
+def ml_predict_endpoint(
+    location_id: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+    session: Session = Depends(get_session),
+    cfg: Settings = Depends(get_cfg),
+) -> dict[str, Any]:
+    _no_writes_in_public(cfg)
+    _location_or_404(session, cfg, location_id)
+    try:
+        from lidar_discovery.ml.predict import predict  # type: ignore[import-not-found]
+
+        res = predict(cfg, location_id, model_version=body.get("model_version"), budget=body.get("budget"))
+        return res if isinstance(res, dict) else {"result": str(res)}
+    except Exception as e:
+        raise HTTPException(500, str(e)) from None
+
+
+@router.get("/ml/card/{version}")
+def ml_card_endpoint(version: str, cfg: Settings = Depends(get_cfg)) -> Any:
+    try:
+        from lidar_discovery.ml.registry import render_card  # type: ignore[import-not-found]
+
+        out = render_card(cfg, version)
+        return out if isinstance(out, dict) else {"card": str(out)}
+    except Exception as e:
+        raise HTTPException(404, str(e)) from None
+
+
+@router.post("/preview")
+def preview_area(
+    body: dict[str, Any] = Body(...),
+    cfg: Settings = Depends(get_cfg),
+) -> dict[str, Any]:
+    """Synthetic preview for 'Test detection here' (no download, <2s for a 200m window).
+
+    Body: {bbox: [w,s,e,n], seed?: int, synthetic?: bool}
+    Uses the viewport bbox you see in /explore and returns a heatmap COG
+    (served as viridis tiles), rectangles (GeoJSON polygons) and 96/256 chip
+    PNGs, plus Candidate rows under a preview location id. All overlay the same
+    way the real pipeline will.
+    """
+    bbox_raw = body.get("bbox")
+    if not bbox_raw or not isinstance(bbox_raw, list) or len(bbox_raw) != 4:
+        raise HTTPException(422, "bbox must be [w,s,e,n] (WGS84)")
+    try:
+        bbox = tuple(float(v) for v in bbox_raw)  # type: ignore[assignment]
+    except Exception as exc:
+        raise HTTPException(422, "bbox values must be numbers") from exc
+    seed = int(body.get("seed", 0)) if body.get("seed") is not None else 0
+    synthetic = bool(body.get("synthetic", True))
+    # validate bbox size (6 km² server limit, but preview clamps to ~0.09 km² anyway)
+    try:
+        from lidar_discovery.areas import area_km2, aoi_2180
+
+        aoi = aoi_2180(bbox)  # type: ignore[arg-type]
+        km2 = area_km2(aoi)
+        if km2 > 2.0:
+            raise HTTPException(422, f"preview bbox too large: {km2:.2f} km² (limit 2 km², zoom in)")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    try:
+        from lidar_discovery.preview import run_preview_for_bbox
+
+        return run_preview_for_bbox(cfg, bbox, seed=seed, synthetic=synthetic)  # type: ignore[arg-type]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"preview failed: {e}") from e
+
+
+@router.get("/preview/{preview_id}")
+def preview_get(
+    preview_id: str,
+    cfg: Settings = Depends(get_cfg),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Fetch a previously created preview's layers + candidates (for reload)."""
+    from lidar_discovery.catalog import repo as _repo
+
+    loc = _repo.get_location(session, preview_id)
+    if loc is None:
+        raise HTTPException(404, f"preview {preview_id!r} not found")
+    layers = [repo.product_to_layer(p) for p in _repo.list_products(session, preview_id)]
+    cands = [_repo.candidate_to_feature(c) for c in _repo.list_candidates(session, preview_id)]
+    return {"preview_id": preview_id, "layers": layers, "candidates": {"type": "FeatureCollection", "features": cands}}
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     cfg = settings or get_settings()
     cfg.ensure_dirs()
     runner = jobs.JobRunner(cfg)
 
+    # optional watch scheduler (daemon) — start only if explicitly enabled via env
+    watch = None
+    try:
+        import os
+
+        if os.getenv("LDP_WATCH") == "1":
+            from lidar_discovery.watch import WatchScheduler
+
+            watch = WatchScheduler(settings=cfg, runner=runner)
+    except Exception:
+        watch = None
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         jobs.mark_interrupted(cfg)  # jobs of a previous process cannot continue
+        if watch is not None:
+            try:
+                watch.start()
+                _app.state.watch = watch
+            except Exception:
+                pass
         yield
+        if watch is not None:
+            with suppress(Exception):
+                watch.stop()
         runner.shutdown()
 
     app = FastAPI(title="lidar-discovery-poland", version=__version__, lifespan=lifespan)
     app.state.settings = cfg
     app.state.runner = runner
+    if watch is not None:
+        app.state.watch = watch
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.cors_origins,

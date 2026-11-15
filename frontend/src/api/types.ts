@@ -54,7 +54,6 @@ export interface LocationProperties {
   provenance?: Provenance[];
   disclosure?: Disclosure;
   polygon?: Polygon | MultiPolygon | null;
-  /** 'village' (default) or 'area' (created by "Get data for this view"). */
   kind?: 'village' | 'area';
 }
 export type LocationGeometry = Point | Polygon | MultiPolygon;
@@ -68,7 +67,7 @@ export interface Layer {
   epoch: number;
   source_id: string;
   resolution_m?: number;
-  bounds: [number, number, number, number]; // w, s, e, n
+  bounds: [number, number, number, number];
   tile_url: string;
   provenance?: Record<string, unknown>;
 }
@@ -92,7 +91,7 @@ export interface CandidateProperties {
   location_id?: string | null;
   morph_class: MorphClass;
   reality: Reality;
-  confidence: number; // 0-1
+  confidence: number;
   dating_evidence?: string;
   documentation_status?: DocumentationEntry[];
   origin: Origin;
@@ -106,9 +105,7 @@ export interface CandidateProperties {
 export type Candidate = Feature<Geometry, CandidateProperties>;
 export type CandidateCollection = FeatureCollection<Geometry, CandidateProperties>;
 
-/** Body for POST: id and timestamps are server-assigned. */
 export type CandidateInput = Feature<Geometry, Partial<CandidateProperties>>;
-/** Body for PATCH: partial properties and/or geometry. */
 export interface CandidatePatch {
   geometry?: Geometry;
   properties?: Partial<CandidateProperties>;
@@ -118,8 +115,42 @@ export interface Source {
   id: string;
   name: string;
   description?: string;
+  crs_h?: string | null;
 }
+
 export interface Health {
   status: string;
-  [k: string]: unknown;
+  version?: string;
+  public_mode?: boolean;
+}
+
+export interface PreviewCandidateRaw {
+  kind: string;
+  score: number;
+  area_m2?: number;
+  length_m?: number;
+  bbox_rc?: number[];
+  poly_wgs84?: number[][];
+  centroid_wgs84: [number, number];
+  centroid_rc?: [number, number];
+  low_support: boolean;
+  support_fraction: number;
+  candidate_id: string;
+  chips: Record<string, string>;
+}
+
+export interface PreviewResult {
+  id: string;
+  location_id: string;
+  bbox: [number, number, number, number];
+  grid: { width: number; height: number; res: number };
+  heatmap_layer_id: string;
+  heatmap_tile_url: string;
+  dtm_layer_id: string;
+  candidates: PreviewCandidateRaw[];
+  candidate_ids: string[];
+  seed: number;
+  synthetic: boolean;
+  note: string;
+  elapsed_s: number;
 }

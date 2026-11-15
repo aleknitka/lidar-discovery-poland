@@ -98,7 +98,7 @@ const areaColor = [
 /** Whole Bieszczady region: the first view when no place is selected. */
 export const BIESZCZADY_BOUNDS: Bounds = [21.9, 48.9, 23.1, 49.45];
 
-const CAND_LAYERS = ['cand-fill', 'cand-line', 'cand-point'];
+const CAND_LAYERS = ['cand-fill', 'cand-line', 'cand-point', 'cand-holloway'];
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
 const rasterLayerId = (id: string) => `r-${id}`;
 
@@ -132,6 +132,13 @@ function addOverlays(map: MlMap) {
     },
   });
   map.addLayer({
+    id: 'cand-holloway',
+    type: 'line',
+    source: 'cands',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: { 'line-color': statusColor, 'line-width': 3, 'line-opacity': 0.9 },
+  });
+  map.addLayer({
     id: 'cand-selected',
     type: 'circle',
     source: 'cands',
@@ -147,7 +154,7 @@ function addOverlays(map: MlMap) {
     id: 'cand-selected-line',
     type: 'line',
     source: 'cands',
-    filter: ['==', ['get', 'id'], ''],
+    filter: ['in', ['geometry-type'], ['literal', ['Polygon', 'LineString']]],
     paint: { 'line-color': '#00b4d8', 'line-width': 4 },
   });
   map.addLayer({

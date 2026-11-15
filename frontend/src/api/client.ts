@@ -9,12 +9,12 @@ import type {
   Layer,
   Location,
   LocationCollection,
+  PreviewResult,
   Source,
 } from './types';
 
 export class ApiError extends Error {
   status: number;
-  /** Parsed JSON error body (e.g. the 422 estimate carrying the numbers), if any. */
   body?: Record<string, unknown>;
   constructor(status: number, message: string, body?: Record<string, unknown>) {
     super(message);
@@ -89,4 +89,13 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
+  preview: (bbox: number[], seed: number, synthetic: boolean) =>
+    request<PreviewResult>('/preview', {
+      method: 'POST',
+      body: JSON.stringify({ bbox, seed, synthetic }),
+    }),
+  previewGet: (id: string) =>
+    request<{ preview_id: string; layers: Layer[]; candidates: CandidateCollection }>(
+      `/preview/${encodeURIComponent(id)}`,
+    ),
 };

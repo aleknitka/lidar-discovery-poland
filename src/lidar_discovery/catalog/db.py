@@ -19,12 +19,16 @@ _lock = threading.Lock()
 
 def _migrate(eng: Engine) -> None:
     """Tiny forward-only migrations for databases created by older versions."""
-    cols = {c["name"] for c in inspect(eng).get_columns("location")}
-    if "kind" not in cols:
+    loc_cols = {c["name"] for c in inspect(eng).get_columns("location")}
+    if "kind" not in loc_cols:
         with eng.begin() as conn:
             conn.execute(
                 text("ALTER TABLE location ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'village'")
             )
+    cand_cols = {c["name"] for c in inspect(eng).get_columns("candidate")}
+    if "provenance" not in cand_cols:
+        with eng.begin() as conn:
+            conn.execute(text("ALTER TABLE candidate ADD COLUMN provenance VARCHAR DEFAULT '{}'"))
 
 
 def get_engine(settings: Settings) -> Engine:

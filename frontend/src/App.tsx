@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import Explore from './routes/Explore';
 import Catalog from './routes/Catalog';
+import NewAreaToast from './components/NewAreaToast';
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="*" element={<Navigate to="/explore" replace />} />
         </Routes>
       </div>
+      <NewAreaToast />
       <footer className="attribution">
         LiDAR: GUGiK (Geoportal.gov.pl) · © OpenStreetMap contributors
       </footer>

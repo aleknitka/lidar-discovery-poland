@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import type { Feature, FeatureCollection } from 'geojson';
 import { useCandidates, useCoverage, useLayers, useLocation, useLocations } from '../api/hooks';
 import { isActiveJob } from '../api/hooks';
-import type { Layer } from '../api/types';
+import type { Candidate, Layer, PreviewResult } from '../api/types';
 import MapView, { type RasterSpec } from '../components/MapView';
 import SwipeCompare from '../components/SwipeCompare';
 import LayerControl, {
@@ -20,6 +20,7 @@ import MissingLayers from '../components/MissingLayers';
 import SidePanel, { PanelOpenButton, isTabId, type TabId } from '../components/SidePanel';
 import CoveragePanel from '../components/CoveragePanel';
 import CandidatePanel, { type DrawMode, type DrawState } from '../components/CandidatePanel';
+import PreviewPanel, { previewCandidatesToFC } from '../components/PreviewPanel';
 import { StatusBadge } from '../components/Badges';
 import { kindRank } from '../content/layers';
 import { locationAoi, locationName, type Bounds } from '../lib/geo';
@@ -93,6 +94,8 @@ export default function Explore() {
   const [draw, setDraw] = useState<DrawState>(NO_DRAW);
   const [view, setView] = useState<{ bounds: Bounds; zoom: number } | null>(null);
   const [areaFc, setAreaFc] = useState<FeatureCollection | null>(null);
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewOpacity, setPreviewOpacity] = useState(0.62);
 
   const selectLocation = (id: string, toLayers = false) => {
     setParams({ loc: id });
@@ -133,6 +136,18 @@ export default function Explore() {
     .filter((l) => layerStates[l.id]?.visible)
     .sort((a, b) => a.epoch - b.epoch || kindRank(b.kind) - kindRank(a.kind))
     .map((l) => toRaster(l, layerStates[l.id]));
+  const previewRasters: RasterSpec[] = useMemo(() => {
+    if (!preview) return [];
+    return [
+      {
+        id: preview.heatmap_layer_id,
+        tileUrl: preview.heatmap_tile_url,
+        opacity: previewOpacity,
+        bounds: preview.bbox as unknown as [number, number, number, number],
+      },
+    ];
+  }, [preview, previewOpacity]);
+  const allRasters = useMemo(() => [...stackRasters, ...previewRasters], [stackRasters, previewRasters]);
   const sideRasters = (id: string): RasterSpec[] => {
     const l = byId.get(id);
     return l ? [toRaster(l, layerStates[l.id])] : [];
@@ -142,7 +157,23 @@ export default function Explore() {
     return l ? layerLabel(l) : 'Basemap';
   };
 
-  const selected = candidatesQ.data?.features.find((c) => c.properties.id === selectedId) ?? null;
+  const previewFC = useMemo(
+    () => (preview ? previewCandidatesToFC(preview.candidates) : null),
+    [preview],
+  );
+  const combinedCandidates: FeatureCollection | null = useMemo(() => {
+    const a = candidatesQ.data ?? null;
+    const b = previewFC;
+    if (!a && !b) return null;
+    if (a && !b) return a;
+    if (!a && b) return b;
+    return {
+      type: 'FeatureCollection',
+      features: [...(a?.features ?? []), ...(b?.features ?? [])],
+    } as unknown as FeatureCollection;
+  }, [candidatesQ.data, previewFC]);
+
+  const selected = combinedCandidates?.features.find((c) => (c.properties as unknown as { id: string }).id === selectedId) ?? null;
 
   const openTab = (t: TabId) => {
     setTab(t);
@@ -158,7 +189,10 @@ export default function Explore() {
       setDraw({ mode: 'polygon', vertices: [...draw.vertices, lngLat] });
     } else {
       setSelectedId(candidateId);
-      if (candidateId) openTab('candidates');
+      if (candidateId) {
+        const isPreview = preview?.candidates.some((c) => c.candidate_id === candidateId);
+        openTab(isPreview ? 'data' : 'candidates');
+      }
     }
   };
 
@@ -169,7 +203,7 @@ export default function Explore() {
 
   const common = {
     bounds,
-    candidates: candidatesQ.data ?? null,
+    candidates: combinedCandidates,
     selectedId,
     draft: draw.mode === 'none' ? null : draftCollection(draw),
     crosshair: draw.mode !== 'none',
@@ -179,19 +213,33 @@ export default function Explore() {
     onClick: onMapClick,
   };
 
+  const handlePreview = (res: PreviewResult) => {
+    setPreview(res);
+    setPreviewOpacity(0.62);
+    // frame the preview bbox so heatmap + rectangles are visible
+    setTab('data');
+    setPanelOpen(true);
+  };
+  const clearPreview = () => {
+    setPreview(null);
+    // keep selected if it was a preview candidate
+    if (selectedId && preview?.candidates.some((c) => c.candidate_id === selectedId)) setSelectedId(null);
+  };
+
   return (
     <div className={`explore ${panelOpen ? 'is-panel-open' : 'is-panel-closed'}`}>
       <main className="map-area">
         {compare.enabled && layers.length > 0 ? (
           <SwipeCompare
             {...common}
+            rasters={allRasters}
             left={sideRasters(compare.leftId)}
             right={sideRasters(compare.rightId)}
             leftLabel={labelOf(compare.leftId)}
             rightLabel={labelOf(compare.rightId)}
           />
         ) : (
-          <MapView {...common} rasters={stackRasters} />
+          <MapView {...common} rasters={allRasters} />
         )}
         <div className="map-title">{feature ? locationName(feature) : 'Bieszczady'}</div>
         <FetchButton fetch={fetchState} onOpened={() => openTab('data')} />
@@ -203,14 +251,15 @@ export default function Explore() {
         onOpenChange={setPanelOpen}
         tab={tab}
         onTabChange={setTab}
-        badges={{ data: jobBusy ? '•' : undefined }}
+        badges={{ data: jobBusy ? '•' : preview ? '◉' : undefined }}
       >
         {tab === 'layers' && (
           <div>
-            {!locationId ? (
+            {!locationId && !preview ? (
               <p className="muted">
                 Nothing is shown yet. Choose a place in the Places tab, or open the Data tab to get
-                LiDAR for the part of the map you are looking at.
+                LiDAR for the part of the map you are looking at — or try <em>Test detection here</em> for a
+                synthetic demo (no download).
               </p>
             ) : layersQ.isLoading ? (
               <p className="muted">Loading layers...</p>
@@ -228,6 +277,26 @@ export default function Explore() {
                   setTab('info');
                 }}
               />
+            )}
+            {preview && (
+              <div className="area-card" style={{ marginTop: 12, borderLeft: '3px solid #00b4d8', paddingLeft: 10 }}>
+                <strong>Preview heatmap</strong>{' '}
+                <span className="muted">viridis 0→1 on top of your layers</span>
+                <label className="field" style={{ marginTop: 6 }}>
+                  Opacity {previewOpacity.toFixed(2)}
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={previewOpacity}
+                    onChange={(e) => setPreviewOpacity(Number(e.target.value))}
+                  />
+                </label>
+                <button onClick={clearPreview} style={{ marginTop: 6 }}>
+                  Clear preview
+                </button>
+              </div>
             )}
             {locationId && !layersQ.isLoading && (
               <MissingLayers
@@ -252,7 +321,7 @@ export default function Explore() {
         {tab === 'candidates' && (
           <>
             <CandidatePanel
-              selected={selected}
+              selected={selected as unknown as Candidate | null}
               locationId={locationId}
               draw={draw}
               onDrawMode={setMode}
@@ -263,24 +332,27 @@ export default function Explore() {
               }}
             />
             <ul className="list">
-              {candidatesQ.data?.features.map((c) => (
-                <li key={c.properties.id}>
-                  <button
-                    className={`list-item ${c.properties.id === selectedId ? 'active' : ''}`}
-                    onClick={() => {
-                      setDraw(NO_DRAW);
-                      setSelectedId(c.properties.id);
-                    }}
-                  >
-                    <span>
-                      {c.properties.morph_class.replace(/_/g, ' ')} · {c.properties.id}
-                    </span>
-                    <StatusBadge value={c.properties.review_status} />
-                  </button>
-                </li>
-              ))}
-              {candidatesQ.data?.features.length === 0 && (
-                <li className="muted">No candidates yet.</li>
+              {combinedCandidates?.features.map((c) => {
+                const p = c.properties as unknown as { id: string; morph_class: string; review_status: string };
+                return (
+                  <li key={p.id}>
+                    <button
+                      className={`list-item ${p.id === selectedId ? 'active' : ''}`}
+                      onClick={() => {
+                        setDraw(NO_DRAW);
+                        setSelectedId(p.id);
+                      }}
+                    >
+                      <span>
+                        {String(p.morph_class).replace(/_/g, ' ')} · {p.id}
+                      </span>
+                      <StatusBadge value={p.review_status as unknown as import('../api/types').ReviewStatus} />
+                    </button>
+                  </li>
+                );
+              })}
+              {!combinedCandidates?.features.length && (
+                <li className="muted">No candidates yet. Try <em>Test detection here</em> in the Data tab.</li>
               )}
             </ul>
           </>
@@ -299,7 +371,19 @@ export default function Explore() {
         {tab === 'data' && (
           <>
             <AreaFetchPanel fetch={fetchState} />
-            <h4 className="subhead">Coverage of the selected place</h4>
+            <PreviewPanel
+              view={view}
+              preview={preview}
+              previewOpacity={previewOpacity}
+              selectedId={selectedId}
+              onPreview={handlePreview}
+              onClear={clearPreview}
+              onOpacityChange={setPreviewOpacity}
+              onSelect={setSelectedId}
+            />
+            <h4 className="subhead" style={{ marginTop: 16 }}>
+              Coverage of the selected place
+            </h4>
             {locationId ? (
               <CoveragePanel coverage={coverage.data} loading={coverage.isLoading} />
             ) : (
