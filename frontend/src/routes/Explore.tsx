@@ -103,6 +103,7 @@ export default function Explore() {
     isColourMode,
   );
   const [basemap, setBasemap] = usePersistentState<BasemapId>('ldp.basemap', 'osm', isBasemapId);
+  const [outlines, setOutlines] = usePersistentState<boolean>('ldp.outlines', false, isBool);
   const [layerStates, setLayerStates] = useState<LayerStates>({});
   const [compare, setCompare] = useState<CompareState>({
     enabled: false,
@@ -198,7 +199,8 @@ export default function Explore() {
     selectedId,
     draft: draw.mode === 'none' ? null : draftCollection(draw),
     crosshair: draw.mode !== 'none',
-    area: areaFc,
+    // Sheet edges and labels only while choosing or downloading; afterwards only if switched on.
+    area: outlines || fetchState.running || fetchState.frozen ? areaFc : null,
     focus: fetchState.focus,
     onViewChange: setView,
     onClick: onMapClick,
@@ -254,6 +256,8 @@ export default function Explore() {
                 onColourMode={setColourMode}
                 basemap={basemap}
                 onBasemap={setBasemap}
+                outlines={outlines}
+                onOutlines={setOutlines}
                 onInfo={(l) => {
                   setInfo({ kind: l.kind, layerId: l.id });
                   setTab('info');

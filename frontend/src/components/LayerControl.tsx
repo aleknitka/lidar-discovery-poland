@@ -34,6 +34,8 @@ interface Props {
   onColourMode: (m: ColourMode) => void;
   basemap: BasemapId;
   onBasemap: (b: BasemapId) => void;
+  outlines: boolean;
+  onOutlines: (on: boolean) => void;
 }
 
 function Segmented<T extends string>({
@@ -90,6 +92,8 @@ export default function LayerControl({
   onColourMode,
   basemap,
   onBasemap,
+  outlines,
+  onOutlines,
 }: Props) {
   if (layers.length === 0) {
     return (
@@ -128,6 +132,14 @@ export default function LayerControl({
           onChange={onBasemap}
           disabled={compare.enabled}
         />
+        <label className="outline-toggle" title="Sheet edges and labels from the last download">
+          <input
+            type="checkbox"
+            checked={outlines}
+            onChange={(e) => onOutlines(e.target.checked)}
+          />{' '}
+          Show download outlines and labels
+        </label>
       </fieldset>
       {groupByEpoch(layers).map(([epoch, ls]) => (
         <fieldset key={epoch}>
