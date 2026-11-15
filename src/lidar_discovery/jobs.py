@@ -35,7 +35,12 @@ from lidar_discovery.catalog import repo
 from lidar_discovery.catalog.db import session_scope
 from lidar_discovery.catalog.models import ACTIVE_JOB_STATES, Job, dumps, utcnow
 from lidar_discovery.config import Settings
-from lidar_discovery.processing.pipeline import ProcessParams, process_aoi, step_names
+from lidar_discovery.processing.pipeline import (
+    ProcessParams,
+    normalise_layers,
+    process_aoi,
+    step_names,
+)
 from lidar_discovery.sources import download
 from lidar_discovery.sources.base import get_source
 
@@ -136,9 +141,19 @@ def mark_interrupted(settings: Settings) -> int:
 
 
 def create_fetch_job(
-    settings: Settings, bbox: BBox, source_id: str | None, year: int | None
+    settings: Settings,
+    bbox: BBox,
+    source_id: str | None,
+    year: int | None,
+    layers: str | list[str] | tuple[str, ...] | None = None,
 ) -> tuple[Job, bool]:
-    """Create a queued job. Returns (job, created); an identical active job is reused."""
+    """Create a queued job. Returns (job, created); an identical active job is reused.
+    `layers` = product kinds to build (default: DTM, hillshade, SVF, ground density; the DTM is
+    always included). Unknown kinds raise AreaError (HTTP 422)."""
+    try:
+        want = normalise_layers(layers)
+    except ValueError as e:
+        raise AreaError(str(e)) from None
     aoi = aoi_2180(bbox)
     km2 = area_km2(aoi)
     if km2 > settings.max_fetch_area_km2:
@@ -156,7 +171,7 @@ def create_fetch_job(
                 }
             },
         )
-    params = {"bbox": list(bbox), "source_id": source_id, "year": year}
+    params = {"bbox": list(bbox), "source_id": source_id, "year": year, "layers": list(want)}
     for j in list_jobs(settings, active=True, limit=100):
         if j.kind == "fetch-area" and json.loads(j.params) == params:
             return j, False
@@ -284,6 +299,7 @@ def run_fetch_job(
         return job  # type: ignore[return-value]
     p = json.loads(job.params)
     bbox: BBox = tuple(p["bbox"])  # type: ignore[assignment]
+    want = normalise_layers(p.get("layers"))  # jobs created before layer selection: the default
 
     def notify(**fields: Any) -> Job:
         j = update_job(settings, job_id, **fields)
@@ -304,49 +320,61 @@ def run_fetch_job(
             raise RuntimeError("no LiDAR coverage for this area and epoch")
         sid, year = chosen["source_id"], chosen["year"]
         key = cache_key(sid, year, aoi)
-        notify(params=dumps({**p, "source_id": sid, "year": year}))
+        notify(params=dumps({**p, "source_id": sid, "year": year, "layers": list(want)}))
         if cancel.is_set():
             raise JobCancelled()
 
-        if products_for_key(settings, lid, sid, year, key):  # processed before: instant
+        existing = products_for_key(settings, lid, sid, year, key)
+        missing = [k for k in want if k not in existing]
+        if not missing:  # everything requested exists: instant
             ensure_area_location(settings, bbox, aoi, key)
             return notify(state="done", message="cached", step=0, steps=0)
+        # the DTM is the expensive part: reuse it when it exists
+        reuse_dtm = "dtm" in existing
+        kinds = tuple(missing) if reuse_dtm else want
+        # only ground_density needs the points once the DTM exists
+        needs_points = (not reuse_dtm) or "ground_density" in kinds
 
         refs = sorted(
             (t for t in tiles_all if t.source_id == sid and t.year == year),
             key=lambda t: t.godlo or "",
         )
-        described = describe_tiles(settings, refs)
-        total = sum(d["size_bytes"] or 0 for d in described)
-        if total > settings.max_fetch_bytes:
-            raise RuntimeError(
-                f"{total / 1e9:.2f} GB of LiDAR exceeds the limit of "
-                f"{settings.max_fetch_bytes / 1e9:.2f} GB"
-            )
+        total = 0
+        tiles: list[dict[str, Any]] = []
+        if needs_points:
+            described = describe_tiles(settings, refs)
+            total = sum(d["size_bytes"] or 0 for d in described)
+            if total > settings.max_fetch_bytes:
+                raise RuntimeError(
+                    f"{total / 1e9:.2f} GB of LiDAR exceeds the limit of "
+                    f"{settings.max_fetch_bytes / 1e9:.2f} GB"
+                )
+            tiles = [
+                {
+                    "godlo": d["godlo"],
+                    "name": d["name"],
+                    "url": d["url"],
+                    "size_bytes": d["size_bytes"] or 0,
+                    "status": "cached" if d["cached"] else "pending",
+                    "bytes": d["size_bytes"] if d["cached"] else d["partial_bytes"],
+                    "footprint": d["footprint"],
+                }
+                for d in described
+            ]
         ensure_area_location(settings, bbox, aoi, key)
-        tiles = [
-            {
-                "godlo": d["godlo"],
-                "name": d["name"],
-                "url": d["url"],
-                "size_bytes": d["size_bytes"] or 0,
-                "status": "cached" if d["cached"] else "pending",
-                "bytes": d["size_bytes"] if d["cached"] else d["partial_bytes"],
-                "footprint": d["footprint"],
-            }
-            for d in described
-        ]
         tracker = Tracker(settings, job_id, tiles, cancel, on_update)
         update_job(settings, job_id, bytes_total=total, tiles_total=len(tiles))
-        notify(
-            state="downloading",
-            message="Downloading LiDAR",
-            tiles=[{k: v for k, v in t.items() if k != "url"} for t in tiles],
-            bytes_done=tracker.bytes_done(),
-            tiles_done=sum(1 for t in tiles if t["status"] == "cached"),
-        )
+        if tiles:
+            notify(
+                state="downloading",
+                message="Downloading LiDAR",
+                tiles=[{k: v for k, v in t.items() if k != "url"} for t in tiles],
+                bytes_done=tracker.bytes_done(),
+                tiles_done=sum(1 for t in tiles if t["status"] == "cached"),
+            )
 
-        todo = [(r, t) for r, t in zip(refs, tiles, strict=True) if t["status"] != "cached"]
+        # (tiles is empty when no LAZ is needed)
+        todo = [(r, t) for r, t in zip(refs, tiles, strict=False) if t["status"] != "cached"]
         if todo:
             with ThreadPoolExecutor(max_workers=PARALLEL_TILES) as pool:
                 futs = [pool.submit(_download_tile, tracker, settings, r, t) for r, t in todo]
@@ -361,8 +389,8 @@ def run_fetch_job(
             raise JobCancelled()
 
         # ---- processing
-        params = ProcessParams()
-        names = step_names(params)
+        params = ProcessParams(kinds=kinds)
+        names = step_names(params, reuse_dtm)
         notify(
             state="processing", message="Processing", steps=len(names), step=0, current_item=None
         )
@@ -378,7 +406,12 @@ def run_fetch_job(
         result = process_aoi(
             settings, lid, aoi, sid, year, paths, chosen.get("crs_h"), params,
             on_step=on_step,
-            extra_provenance={"cache_key": key, "bbox_2180": [round(v) for v in aoi.bounds]},
+            extra_provenance={
+                "cache_key": key,
+                "bbox_2180": [round(v) for v in aoi.bounds],
+                "layers_requested": list(want),
+            },
+            dtm_path=settings.data_dir / existing["dtm"].path if reuse_dtm else None,
         )  # fmt: skip
         with session_scope(settings) as s:
             for prod in result.products:

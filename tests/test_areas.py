@@ -187,7 +187,8 @@ def test_job_lifecycle_progress_and_area_location(world):
     done = [u["bytes_done"] for u in updates if u["state"] == "downloading"]
     assert done == sorted(done) and len(done) > 3 and done[-1] == j.bytes_total
     steps = [u["step_name"] for u in updates if u["state"] == "processing" and u["step_name"]]
-    assert steps == ["ground points", "dtm", "density", "hillshade", "slope", "svf", "lrm", "write"]
+    # default layers: DTM, hillshade, SVF, ground density
+    assert steps == ["ground points", "dtm", "density", "hillshade", "svf", "write"]
     assert j.tiles_done == j.tiles_total == 2 and j.finished_at
     # area Location
     c = TestClient(create_app(s))
@@ -197,7 +198,7 @@ def test_job_lifecycle_progress_and_area_location(world):
     assert loc["names"]["other"].startswith("Area 49.")
     assert loc["has_products"] is True
     layers = c.get(f"/api/locations/{j.location_id}/layers").json()
-    assert {lay["kind"] for lay in layers} >= {"svf", "hillshade", "dtm"}
+    assert {lay["kind"] for lay in layers} == {"svf", "hillshade", "dtm", "ground_density"}
     assert all(lay["provenance"]["cache_key"] for lay in layers)
     svf = next(lay for lay in layers if lay["kind"] == "svf")
     lon, lat = (world["bbox"][0] + world["bbox"][2]) / 2, (world["bbox"][1] + world["bbox"][3]) / 2

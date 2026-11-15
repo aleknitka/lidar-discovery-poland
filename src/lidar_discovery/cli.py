@@ -285,6 +285,14 @@ def fetch_bbox(
     source: Annotated[str | None, typer.Option(help="Source id (default: newest epoch).")] = None,
     year: Annotated[int | None, typer.Option(help="Acquisition year (default: newest).")] = None,
     estimate_only: Annotated[bool, typer.Option(help="Print the estimate and stop.")] = False,
+    layers: Annotated[
+        str | None,
+        typer.Option(
+            help="Comma-separated products to build: dtm,hillshade,slope,svf,lrm,ground_density "
+            "(dtm is always included). Default: dtm,hillshade,svf,ground_density. Affects "
+            "processing time and disk, not the LAZ download size."
+        ),
+    ] = None,
 ) -> None:
     """Download only the sheets covering a WGS84 bbox, then process it (same code as the UI)."""
     import threading
@@ -303,7 +311,7 @@ def fetch_bbox(
     s = _settings()
     try:
         bbox = areas.parse_bbox([west, south, east, north])
-        est = areas.estimate_area(s, bbox, source, year)
+        est = areas.estimate_area(s, bbox, source, year, layers)
     except areas.AreaError as e:
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(2) from None
@@ -312,14 +320,24 @@ def fetch_bbox(
         f"{est['sheets']} sheets, {est['bytes_total'] / 1e6:.0f} MB total, "
         f"{est['bytes_cached'] / 1e6:.0f} MB cached, "
         f"{est['bytes_to_download'] / 1e6:.0f} MB to download"
-        + (" (already processed)" if est["processed"] else "")
+        + (" (all requested layers already processed)" if est["processed"] else "")
     )
+    typer.echo(
+        f"layers: {','.join(est['layers'])}; on disk: {','.join(est['layers_existing']) or '-'}; "
+        f"to build: {','.join(est['layers_missing']) or '-'}"
+        + (" (reusing the existing DTM)" if est["from_existing_dtm"] else "")
+    )
+    if est["processing_s"]:
+        parts = ", ".join(
+            f"{k} {v:.0f}s" for k, v in est["processing_s"].items() if k != "total" and v
+        )
+        typer.echo(f"estimated processing: ~{est['processing_s']['total']:.0f} s ({parts})")
     for t in est["tiles"]:
         state = "cached" if t["cached"] else "to download"
         typer.echo(f"  {t['godlo']:28} {(t['size_bytes'] or 0) / 1e6:7.0f} MB  {state}")
     if estimate_only or not est["tiles"]:
         raise typer.Exit(0 if est["tiles"] or estimate_only else 1)
-    job, _ = jobs.create_fetch_job(s, bbox, est["source_id"], est["year"])
+    job, _ = jobs.create_fetch_job(s, bbox, est["source_id"], est["year"], layers)
     cancel = threading.Event()
     th = threading.Thread(target=jobs.run_fetch_job, args=(s, job.id, cancel), daemon=True)
     th.start()

@@ -41,6 +41,18 @@ export interface AreaEstimate {
   processed?: boolean;
   limits: AreaLimits;
   over_limit?: 'area' | 'bytes';
+  /** Requested product kinds (the DTM is always included), canonical order. */
+  layers?: string[];
+  /** Requested kinds already on disk for this area and epoch. */
+  layers_existing?: string[];
+  /** Requested kinds that still have to be built. */
+  layers_missing?: string[];
+  /** True when the missing kinds are built from the DTM already on disk. */
+  from_existing_dtm?: boolean;
+  /** False when nothing needs the LAZ sheets (everything exists, or only DTM-derived kinds). */
+  needs_laz?: boolean;
+  /** Estimated processing seconds per kind, plus "points" (reading LAZ) and "total". */
+  processing_s?: Record<string, number> | null;
 }
 
 export type JobState =
@@ -59,7 +71,7 @@ export interface JobTile {
 export interface Job {
   id: string;
   kind: string;
-  params: { bbox: BBox; source_id?: string | null; year?: number | null };
+  params: { bbox: BBox; source_id?: string | null; year?: number | null; layers?: string[] };
   state: JobState;
   bytes_done: number;
   bytes_total: number;
@@ -85,4 +97,6 @@ export interface FetchRequest {
   bbox: BBox;
   source_id?: string | null;
   year?: number | null;
+  /** Product kinds to build, e.g. ["dtm", "hillshade", "svf"]. The DTM is always added. */
+  layers?: string[] | string;
 }

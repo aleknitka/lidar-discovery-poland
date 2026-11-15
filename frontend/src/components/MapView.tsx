@@ -4,7 +4,8 @@ import type { Map as MlMap, StyleSpecification } from 'maplibre-gl';
 import type { FeatureCollection } from 'geojson';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { CandidateCollection } from '../api/types';
-import type { Bounds } from '../lib/geo';
+import { polygonCentre, type Bounds } from '../lib/geo';
+import { AREA_COLORS } from '../lib/areaStyle';
 
 export interface RasterSpec {
   id: string;
@@ -28,6 +29,8 @@ export interface MapViewProps {
   crosshair?: boolean;
   /** Viewport rectangle + sheet footprints; each feature has properties.state (see AREA_COLORS). */
   area?: FeatureCollection | null;
+  /** Fit the map to these bounds (with extra padding) once per `key`, e.g. to frame the view. */
+  focus?: { bounds: Bounds; key: string } | null;
   /** Fired on load and after every pan/zoom. */
   onViewChange?: (view: { bounds: Bounds; zoom: number }) => void;
   onClick?: (lngLat: [number, number], candidateId: string | null) => void;
@@ -72,21 +75,22 @@ const statusColor = [
   '#888888',
 ] as unknown as string;
 
-export const AREA_COLORS: Record<string, string> = {
-  viewport: '#00b4d8',
-  cached: '#2e9d4f',
-  done: '#2e9d4f',
-  todo: '#e0a100',
-  pending: '#e0a100',
-  downloading: '#d1582e',
-  failed: '#b23b3b',
-};
+const stateIs = (...states: string[]) =>
+  ['in', ['get', 'state'], ['literal', states]] as unknown as maplibregl.FilterSpecification;
 const areaColor = [
   'match',
   ['get', 'state'],
-  ...Object.entries(AREA_COLORS).flat(),
-  '#888888',
+  ['cached', 'done'],
+  AREA_COLORS.cached,
+  'downloading',
+  AREA_COLORS.downloading,
+  'failed',
+  AREA_COLORS.failed,
+  AREA_COLORS.todo,
 ] as unknown as string;
+
+/** Whole Bieszczady region: the first view when no place is selected. */
+export const BIESZCZADY_BOUNDS: Bounds = [21.9, 48.9, 23.1, 49.45];
 
 const CAND_LAYERS = ['cand-fill', 'cand-line', 'cand-point'];
 const EMPTY: FeatureCollection = { type: 'FeatureCollection', features: [] };
@@ -154,25 +158,47 @@ function addOverlays(map: MlMap) {
     filter: ['in', ['geometry-type'], ['literal', ['LineString', 'Polygon']]],
     paint: { 'line-color': '#00b4d8', 'line-width': 2, 'line-dasharray': [2, 1] },
   });
+  // View outline and sheet footprints. Added once the style has loaded, on top of the LiDAR
+  // rasters (those are inserted below 'cand-fill'). Cached = solid blue, to download = dashed
+  // orange, so the two differ without colour as well.
   map.addSource('area', { type: 'geojson', data: EMPTY });
   map.addLayer({
     id: 'area-fill',
     type: 'fill',
     source: 'area',
+    filter: ['!=', ['get', 'state'], 'viewport'],
     paint: {
       'fill-color': areaColor,
-      'fill-opacity': ['match', ['get', 'state'], 'viewport', 0, 'downloading', 0.3, 0.12],
+      'fill-opacity': ['match', ['get', 'state'], 'downloading', 0.42, 0.28],
     },
   });
   map.addLayer({
-    id: 'area-line',
+    id: 'area-line-cached',
     type: 'line',
     source: 'area',
-    paint: {
-      'line-color': areaColor,
-      'line-width': ['match', ['get', 'state'], 'viewport', 3, 2],
-      'line-dasharray': [3, 2],
-    },
+    filter: stateIs('cached', 'done', 'failed'),
+    paint: { 'line-color': areaColor, 'line-width': 3 },
+  });
+  map.addLayer({
+    id: 'area-line-todo',
+    type: 'line',
+    source: 'area',
+    filter: stateIs('todo', 'pending', 'downloading'),
+    paint: { 'line-color': areaColor, 'line-width': 3, 'line-dasharray': [2, 1.5] },
+  });
+  map.addLayer({
+    id: 'area-view-casing',
+    type: 'line',
+    source: 'area',
+    filter: stateIs('viewport'),
+    paint: { 'line-color': AREA_COLORS.viewportCasing, 'line-width': 6, 'line-opacity': 0.7 },
+  });
+  map.addLayer({
+    id: 'area-view',
+    type: 'line',
+    source: 'area',
+    filter: stateIs('viewport'),
+    paint: { 'line-color': AREA_COLORS.viewport, 'line-width': 2.5 },
   });
   map.addLayer({
     id: 'draft-pts',
@@ -198,6 +224,7 @@ export default function MapView({
   attribution = true,
   crosshair,
   area,
+  focus,
   onViewChange,
   onClick,
   onMapReady,
@@ -220,13 +247,15 @@ export default function MapView({
     const map = new maplibregl.Map({
       container: container.current,
       style: STYLE,
-      bounds: initialBounds.current ?? [21.5, 49.0, 22.9, 49.5],
+      bounds: initialBounds.current ?? BIESZCZADY_BOUNDS,
       fitBoundsOptions: { padding: 20 },
       interactive,
       attributionControl: attribution ? { customAttribution: ATTRIBUTION.slice(1) } : false,
     });
     mapRef.current = map;
-    map.on('load', () => {
+    // 'style.load' (not 'load'): 'load' waits for the first basemap tiles, so with a slow or
+    // blocked tile server the overlays below would never be added.
+    map.once('style.load', () => {
       addOverlays(map);
       setLoaded(true);
       onReadyRef.current?.(map);
@@ -318,6 +347,66 @@ export default function MapView({
     const src = mapRef.current?.getSource('area') as maplibregl.GeoJSONSource | undefined;
     src?.setData(area ?? EMPTY);
   }, [area, loaded]);
+
+  // Sheet labels: HTML markers at the centre of each footprint (no font server needed).
+  const markers = useRef<Map<string, maplibregl.Marker>>(new Map());
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loaded) return;
+    const wanted = new Map<string, { at: [number, number]; text: string; title: string }>();
+    for (const f of area?.features ?? []) {
+      const p = f.properties ?? {};
+      if (p.state === 'viewport' || !p.label || f.geometry.type !== 'Polygon') continue;
+      const at = polygonCentre(f.geometry);
+      if (at)
+        wanted.set(`${at[0].toFixed(5)},${at[1].toFixed(5)}`, {
+          at,
+          text: String(p.label),
+          title: String(p.title ?? p.label),
+        });
+    }
+    for (const [k, m] of markers.current) {
+      if (!wanted.has(k)) {
+        m.remove();
+        markers.current.delete(k);
+      }
+    }
+    for (const [k, w] of wanted) {
+      const existing = markers.current.get(k);
+      if (existing) {
+        existing.getElement().textContent = w.text;
+        continue;
+      }
+      const el = document.createElement('div');
+      el.className = 'sheet-label';
+      el.textContent = w.text;
+      el.title = w.title;
+      markers.current.set(k, new maplibregl.Marker({ element: el }).setLngLat(w.at).addTo(map));
+    }
+  }, [area, loaded]);
+  useEffect(() => {
+    const live = markers.current;
+    return () => {
+      for (const m of live.values()) m.remove();
+      live.clear();
+    };
+  }, []);
+
+  // Frame the (frozen) view with some room around it so its outline is visible.
+  const focusKey = focus?.key ?? '';
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loaded || !focus) return;
+    const narrow = window.matchMedia('(max-width: 720px)').matches;
+    map.fitBounds(focus.bounds, {
+      padding: narrow
+        ? { top: 56, left: 24, right: 24, bottom: Math.round(window.innerHeight * 0.55) }
+        : 70,
+      duration: 400,
+      maxZoom: 17,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey, loaded]);
 
   useEffect(() => {
     const src = mapRef.current?.getSource('draft') as maplibregl.GeoJSONSource | undefined;

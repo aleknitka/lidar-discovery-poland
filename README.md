@@ -25,7 +25,7 @@ Early-stage research software (v0).
 | LiDAR acquisition (GUGiK 2010-2019 and 2023/2025 epochs, local LAZ) | Working |
 | Processing (0.5 m DTM, ground density, hillshade, slope, SVF, LRM, COG output) | Working |
 | "Get data for this view": download with progress and caching | Working |
-| Review web app (map, layers, swipe compare, candidate editing) | Working, not yet tested by users |
+| Review web app (map, tabbed panel, layer explanations, swipe compare, candidate editing) | Working, not yet tested by users |
 | Rule-based and ML candidate detection | Planned ([docs/09](docs/09-ml-detection-plan.md)) |
 | Public catalogue and story pages | Planned ([docs/10](docs/10-presentation-plan.md)) |
 
@@ -47,8 +47,8 @@ To run the two parts separately, use `uv run ldp serve` in one terminal and `npm
 In the app, at **/explore**:
 
 1. Pan and zoom to an area of interest (zoom 13 or closer).
-2. Click **Get data for this view**. You get an estimate of the map sheets needed, MB to download and MB already cached. Pick the epoch (2012 sheets are about 100 MB each; 2023 sheets are denser and larger) and confirm.
-3. Watch the progress bar. When the job finishes, the area appears under **Fetched areas** with its sky-view-factor layer on. Use the layer switcher, the opacity slider and the swipe compare to inspect it.
+2. Click **Get data for this view** (it opens the **Data** tab of the right-hand panel). You see the map sheets needed as coloured outlines on the map and as a table (cached vs to download, MB), the view area against the limit, and checkboxes for the layers to build. Pick the epoch (2012 sheets are about 100 MB each; 2023 sheets are denser and larger) and confirm. The LAZ download dominates the cost and does not shrink with fewer layers; layer choice only saves processing time and disk space.
+3. Watch the progress bar. When the job finishes, the area is selected with its bare-earth height (DTM) layer on. Use the **Layers** tab (switcher, opacity, swipe compare) and the (i) buttons or the **Info** tab to learn what each layer shows. Places and fetched areas are listed in the **Places** tab; the panel can be hidden to give the map the full screen.
 4. Mark candidate features on the map and record their type, confidence, evidence and disclosure level.
 
 Use `127.0.0.1` rather than `localhost` on Windows: resolving `localhost` through IPv6 adds about 2 s per request.
@@ -65,6 +65,7 @@ uv run ldp sources                                       # registered LiDAR sour
 uv run ldp coverage carynskie --aoi point                # sheets per source/year, density; no download
 uv run ldp fetch-bbox 22.612 49.1675 22.620 49.1705 --source gugik-kron86 --year 2012 --estimate-only
 uv run ldp fetch-bbox 22.612 49.1675 22.620 49.1705 --source gugik-kron86 --year 2012
+uv run ldp fetch-bbox 22.612 49.1675 22.620 49.1705 --year 2012 --layers dtm,svf,lrm   # only some products
 uv run ldp locations fetch-prg carynskie                 # official cadastral-precinct boundary
 uv run ldp ingest carynskie --source gugik-kron86 --year 2012 --aoi point --aoi-buffer-m 150
 uv run ldp process carynskie --source gugik-kron86 --year 2012 --aoi point --aoi-buffer-m 800

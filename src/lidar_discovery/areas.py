@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -23,7 +23,12 @@ from lidar_discovery.catalog.db import session_scope
 from lidar_discovery.catalog.models import Location, Product, dumps
 from lidar_discovery.config import Settings
 from lidar_discovery.locations.aoi import to_4326
-from lidar_discovery.processing.pipeline import PIPELINE_VERSION, ProcessParams
+from lidar_discovery.processing.pipeline import (
+    PIPELINE_VERSION,
+    ProcessParams,
+    estimate_processing_s,
+    normalise_layers,
+)
 from lidar_discovery.sources import download
 from lidar_discovery.sources.base import TileRef, get_source
 
@@ -78,13 +83,22 @@ def location_id_for(aoi: Polygon) -> str:
 
 
 def cache_key(source_id: str, year: int, aoi: Polygon, params: ProcessParams | None = None) -> str:
-    """Processing cache key: hash(source, year, bbox at 1 m in EPSG:2180, params, version)."""
-    p = asdict(params or ProcessParams())
+    """Processing cache key of an area: hash(source, year, bbox at 1 m in EPSG:2180, params,
+    version). It identifies the DTM and everything derived from it, so it does NOT depend on
+    which layers were requested (see `layers_key` for that): a later request for more layers
+    reuses the DTM of the same key."""
+    p = asdict(replace(params or ProcessParams(), kinds=ProcessParams().kinds))
     blob = json.dumps(
         [source_id, year, [round(v) for v in aoi.bounds], p, PIPELINE_VERSION],
         sort_keys=True,
         default=list,
     )
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def layers_key(key: str, layers: tuple[str, ...]) -> str:
+    """Key of one request: the area key plus the (normalised) layer set."""
+    blob = json.dumps([key, sorted(layers)])
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
@@ -227,27 +241,54 @@ def describe_tiles(settings: Settings, tiles: list[TileRef]) -> list[dict[str, A
     return out
 
 
-def products_for_key(settings: Settings, loc_id: str, source_id: str, year: int, key: str):
-    """Products of this area+epoch already computed with this exact cache key (files present)."""
+def products_for_key(
+    settings: Settings, loc_id: str, source_id: str, year: int, key: str
+) -> dict[str, Product]:
+    """{kind: Product} of this area+epoch already computed with this exact cache key and whose
+    raster file is still on disk."""
     with session_scope(settings) as session:
         prods: list[Product] = [
             p
             for p in repo.list_products(session, loc_id)
             if p.source_id == source_id and p.epoch == year
         ]
-    ok = [
-        p
+    return {
+        p.kind: p
         for p in prods
         if json.loads(p.provenance).get("cache_key") == key
         and (settings.data_dir / p.path).exists()
-    ]
-    return ok if ok and len(ok) == len(prods) else []
+    }
+
+
+def layer_plan(
+    existing: dict[str, Product], layers: tuple[str, ...], km2: float, sheets: int
+) -> dict[str, Any]:
+    """What a request for `layers` needs: kinds on disk, kinds to build, estimated seconds."""
+    have = [k for k in layers if k in existing]
+    missing = [k for k in layers if k not in existing]
+    from_dtm = "dtm" in existing
+    return {
+        "layers": list(layers),
+        "layers_existing": have,
+        "layers_missing": missing,
+        "from_existing_dtm": from_dtm and bool(missing),
+        "processing_s": estimate_processing_s(km2, missing, sheets, from_dtm) if missing else None,
+    }
 
 
 def estimate_area(
-    settings: Settings, bbox: BBox, source_id: str | None = None, year: int | None = None
+    settings: Settings,
+    bbox: BBox,
+    source_id: str | None = None,
+    year: int | None = None,
+    layers: str | list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
-    """Estimate for a viewport. Raises AreaError (payload carries the numbers) over the limits."""
+    """Estimate for a viewport. Raises AreaError (payload carries the numbers) over the limits
+    and for unknown layer kinds."""
+    try:
+        want = normalise_layers(layers)
+    except ValueError as e:
+        raise AreaError(str(e)) from None
     aoi = aoi_2180(bbox)
     km2 = area_km2(aoi)
     limits = {
@@ -258,6 +299,7 @@ def estimate_area(
         "bbox": list(bbox),
         "area_km2": round(km2, 4),
         "limits": limits,
+        "layers": list(want),
     }
     if km2 > settings.max_fetch_area_km2:
         raise AreaError(
@@ -283,6 +325,7 @@ def estimate_area(
             "location_id": location_id_for(aoi),
             "processed": False,
             "errors": errors,
+            **layer_plan({}, want, km2, 0),
         }
     sid, yr = chosen["source_id"], chosen["year"]
     sel = sorted(
@@ -296,6 +339,15 @@ def estimate_area(
     )
     key = cache_key(sid, yr, aoi)
     lid = location_id_for(aoi)
+    existing = products_for_key(settings, lid, sid, yr, key)
+    plan = layer_plan(existing, want, km2, len(described))
+    # With a DTM on disk, only ground_density needs the LAZ points; otherwise nothing is fetched
+    # when every requested layer exists, or when the only missing ones derive from the DTM.
+    needs_laz = bool(plan["layers_missing"]) and (
+        not plan["from_existing_dtm"] or "ground_density" in plan["layers_missing"]
+    )
+    if not needs_laz:
+        todo = 0
     result = {
         **base,
         "source_id": sid,
@@ -306,8 +358,10 @@ def estimate_area(
         "bytes_cached": cached,
         "bytes_to_download": todo,
         "location_id": lid,
-        "processed": bool(products_for_key(settings, lid, sid, yr, key)),
+        "processed": not plan["layers_missing"],
+        "needs_laz": needs_laz,
         "errors": errors,
+        **plan,
     }
     if total > settings.max_fetch_bytes:
         raise AreaError(

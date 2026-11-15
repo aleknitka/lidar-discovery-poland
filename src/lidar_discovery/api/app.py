@@ -129,6 +129,7 @@ def layer_tile(
     z: int,
     x: int,
     y: int,
+    shade: float = Query(default=0.0, ge=0.0, le=1.0),
     session: Session = Depends(get_session),
     cfg: Settings = Depends(get_cfg),
 ) -> Response:
@@ -144,7 +145,7 @@ def layer_tile(
     if not (0 <= z <= 24) or not (0 <= x < 2**z) or not (0 <= y < 2**z):
         raise HTTPException(400, "invalid tile coordinates")
     rng = json.loads(prod.provenance).get("display_range")
-    png = render_tile(path, prod.kind, tuple(rng) if rng else None, z, x, y)
+    png = render_tile(path, prod.kind, tuple(rng) if rng else None, z, x, y, shade)
     return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
@@ -157,10 +158,11 @@ def areas_estimate(
     bbox: str,
     source_id: str | None = None,
     year: int | None = None,
+    layers: str | None = None,
     cfg: Settings = Depends(get_cfg),
 ) -> Any:
     try:
-        return areas.estimate_area(cfg, areas.parse_bbox(bbox), source_id, year)
+        return areas.estimate_area(cfg, areas.parse_bbox(bbox), source_id, year, layers)
     except areas.AreaError as e:
         return _area_error(e)
     except RuntimeError as e:
@@ -179,7 +181,10 @@ def areas_fetch(
         year = body.get("year")
         if year is not None and not isinstance(year, int):
             raise areas.AreaError("year must be an integer")
-        job, created = jobs.create_fetch_job(cfg, bbox, body.get("source_id"), year)
+        layers = body.get("layers")
+        if layers is not None and not isinstance(layers, str | list):
+            raise areas.AreaError("layers must be a comma-separated string or a list")
+        job, created = jobs.create_fetch_job(cfg, bbox, body.get("source_id"), year, layers)
     except areas.AreaError as e:
         return _area_error(e)
     if created:

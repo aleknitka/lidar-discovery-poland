@@ -60,12 +60,18 @@ export const api = {
   location: (id: string) => request<Location>(`/locations/${encodeURIComponent(id)}`),
   coverage: (id: string) => request<Coverage[]>(`/locations/${encodeURIComponent(id)}/coverage`),
   layers: (id: string) => request<Layer[]>(`/locations/${encodeURIComponent(id)}/layers`),
-  estimateArea: (bbox: number[], source_id?: string | null, year?: number | null) =>
+  estimateArea: (
+    bbox: number[],
+    source_id?: string | null,
+    year?: number | null,
+    layers?: string | null,
+  ) =>
     request<AreaEstimate>(
       `/areas/estimate${qs({
         bbox: bbox.join(','),
         source_id: source_id ?? undefined,
         year: year ? String(year) : undefined,
+        layers: layers ?? undefined,
       })}`,
     ),
   fetchArea: (body: FetchRequest) =>

@@ -68,7 +68,22 @@ const locations: Location[] = [
   },
 ];
 
-const KINDS = ['hillshade', 'svf', 'lrm'] as const;
+const KINDS = ['dtm', 'hillshade', 'svf', 'lrm', 'ground_density'] as const;
+const ALL_KINDS = ['dtm', 'hillshade', 'slope', 'svf', 'lrm', 'ground_density'];
+const DEFAULT_KINDS = ['dtm', 'hillshade', 'svf', 'ground_density'];
+/** Kinds built for fetched areas (mock location id -> kinds); grows when a later job adds more. */
+const builtKinds = new Map<string, Set<string>>();
+// Seconds per km2 (compute + write), as measured by the backend (see processing/pipeline.py).
+const SEC_PER_KM2: Record<string, number> = {
+  dtm: 11.3,
+  hillshade: 1.2,
+  slope: 0.95,
+  svf: 2.8,
+  lrm: 1.2,
+  ground_density: 0.75,
+};
+/** Sheets (godlo) already on disk in mock mode. One sheet is cached from the start. */
+const cachedSheets = new Set<string>();
 const EPOCHS: [number, string][] = [
   [2012, 'gugik-kron86'],
   [2023, 'gugik-evrf2007'],
@@ -82,8 +97,11 @@ function layersFor(loc: Location): Layer[] {
     ? (geometryBounds(loc.properties.polygon!) as BBox)
     : box(lon, lat, 0.012, 0.008);
   const epochs = isArea ? [EPOCHS[1]] : EPOCHS;
+  const kinds: readonly string[] = isArea
+    ? ALL_KINDS.filter((k) => builtKinds.get(loc.properties.id)?.has(k))
+    : KINDS;
   return epochs.flatMap(([epoch, source_id]) =>
-    (isArea ? (['svf', 'hillshade'] as const) : KINDS).map((kind) => {
+    kinds.map((kind) => {
       const id = `${loc.properties.id}-${source_id}-${epoch}-${kind}`;
       return {
         id,
@@ -94,7 +112,19 @@ function layersFor(loc: Location): Layer[] {
         resolution_m: epoch === 2023 ? 0.5 : 1,
         bounds,
         tile_url: `mock://${id}/{z}/{x}/{y}`,
-        provenance: { input_tiles: 4, code_version: 'mock', created_at: '2026-11-13T00:00:00Z' },
+        provenance: {
+          cache_key: 'mock',
+          crs_xy: 'EPSG:2180',
+          crs_h: source_id === 'gugik-kron86' ? 'PL-KRON86-NH' : 'PL-EVRF2007-NH',
+          display_range: kind === 'dtm' ? [412.3, 688.9] : [0, 1],
+          valid_fraction: 0.97,
+          point_stats: { points_total: 5_200_000, points_ground: 1_850_000, files: 2 },
+          inputs: [{ file: 'mock.laz' }],
+          computed_from: 'ground-points',
+          parameters: { res: 0.5, svf_radius_m: 10, svf_dirs: 16, lrm_sigma_m: 10 },
+          code_version: 'mock',
+          created_at: '2026-11-13T00:00:00Z',
+        },
       };
     }),
   );
@@ -210,8 +240,29 @@ const sheetPoly = (x0: number, y0: number): Polygon => ({
   ],
 });
 
-function mockEstimate(bbox: BBox, sourceId: string | null, year: number | null) {
+function parseLayers(text: string | null | undefined): string[] | null {
+  if (!text) return DEFAULT_KINDS;
+  const items = text
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (items.some((k) => !ALL_KINDS.includes(k))) return null;
+  return ALL_KINDS.filter((k) => k === 'dtm' || items.includes(k));
+}
+
+function mockEstimate(
+  bbox: BBox,
+  sourceId: string | null,
+  year: number | null,
+  layersText: string | null = null,
+) {
   const area = km2Of(bbox);
+  const layers = parseLayers(layersText);
+  if (!layers)
+    return {
+      status: 422,
+      body: { detail: `unknown layer kind(s); allowed: ${ALL_KINDS.join(', ')}` },
+    };
   const limits = { max_area_km2: 6, max_bytes: 4e9 };
   if (area > limits.max_area_km2)
     return {
@@ -232,7 +283,8 @@ function mockEstimate(bbox: BBox, sourceId: string | null, year: number | null) 
         godlo: `M-34-106-${i}-${j}`,
         name: `${i}_${j}_mock.laz`,
         size_bytes: (90 + ((i * 7 + j * 13) % 11) * 12) * 1e6 * ep.k,
-        cached: tiles.length === 0,
+        cached:
+          cachedSheets.has(`M-34-106-${i}-${j}`) || (cachedSheets.size === 0 && tiles.length === 0),
         partial_bytes: 0,
         footprint: sheetPoly(i * SHEET_DLON, j * SHEET_DLAT),
       });
@@ -240,6 +292,16 @@ function mockEstimate(bbox: BBox, sourceId: string | null, year: number | null) 
   const total = tiles.reduce((a, t) => a + (t.size_bytes ?? 0), 0);
   const cached = tiles.filter((t) => t.cached).reduce((a, t) => a + (t.size_bytes ?? 0), 0);
   const epochs = MOCK_EPOCHS.map((e) => ({ ...e, tiles: tiles.length }));
+  const built = builtKinds.get('area-mock0001') ?? new Set<string>();
+  const existing = layers.filter((k) => built.has(k));
+  const missing = layers.filter((k) => !built.has(k));
+  const fromDtm = built.has('dtm');
+  const needsLaz = missing.length > 0 && (!fromDtm || missing.includes('ground_density'));
+  const proc: Record<string, number> = {};
+  for (const k of missing)
+    if (!(k === 'dtm' && fromDtm))
+      proc[k] = Math.round(SEC_PER_KM2[k] * area * 10) / 10 + (k === 'dtm' ? 18 : 0) + 0.3;
+  const points = needsLaz ? 1.5 * tiles.length : 0;
   const est: AreaEstimate = {
     bbox,
     area_km2: area,
@@ -250,10 +312,22 @@ function mockEstimate(bbox: BBox, sourceId: string | null, year: number | null) 
     sheets: tiles.length,
     bytes_total: total,
     bytes_cached: cached,
-    bytes_to_download: total - cached,
-    processed: false,
+    bytes_to_download: needsLaz ? total - cached : 0,
+    processed: missing.length === 0,
     limits,
     location_id: 'area-mock0001',
+    layers,
+    layers_existing: existing,
+    layers_missing: missing,
+    from_existing_dtm: fromDtm && missing.length > 0,
+    needs_laz: needsLaz,
+    processing_s: missing.length
+      ? {
+          ...proc,
+          points,
+          total: Math.round((Object.values(proc).reduce((a, b) => a + b, 0) + points) * 10) / 10,
+        }
+      : null,
   };
   if (total > limits.max_bytes) est.over_limit = 'bytes';
   return {
@@ -271,10 +345,17 @@ interface MockJob {
 }
 const mockJobs: MockJob[] = [];
 const JOB_MS = 10_000;
-const STEPS = ['ground points', 'dtm', 'density', 'hillshade', 'slope', 'svf', 'lrm', 'write'];
+const stepsFor = (layers: string[]) => [
+  'ground points',
+  'dtm',
+  ...(layers.includes('ground_density') ? ['density'] : []),
+  ...['hillshade', 'slope', 'svf', 'lrm'].filter((k) => layers.includes(k)),
+  'write',
+];
 
 function mockJobView(mj: MockJob): Job {
   const t = (mj.cancelledAt ?? Date.now()) - mj.start;
+  const STEPS = stepsFor(mj.est.layers ?? DEFAULT_KINDS);
   const total = mj.est.bytes_to_download ?? 0;
   let state: Job['state'] = 'downloading';
   if (t < 600) state = 'listing';
@@ -318,11 +399,20 @@ function mockJobView(mj: MockJob): Job {
   if (state === 'done' && !mj.added) {
     mj.added = true;
     addMockArea(mj.est.bbox);
+    const set = builtKinds.get('area-mock0001') ?? new Set<string>();
+    for (const k of mj.est.layers ?? DEFAULT_KINDS) set.add(k);
+    builtKinds.set('area-mock0001', set);
+    if (mj.est.needs_laz !== false) for (const x of mj.est.tiles) cachedSheets.add(x.godlo);
   }
   return {
     id: mj.id,
     kind: 'fetch-area',
-    params: { bbox: mj.est.bbox, source_id: mj.est.source_id, year: mj.est.year },
+    params: {
+      bbox: mj.est.bbox,
+      source_id: mj.est.source_id,
+      year: mj.est.year,
+      layers: mj.est.layers,
+    },
     state,
     bytes_done: state === 'listing' ? 0 : done,
     bytes_total: total,
@@ -381,18 +471,25 @@ function handleAreas(method: string, p: string, url: URL, body: unknown): Respon
     const bb = (url.searchParams.get('bbox') ?? '').split(',').map(Number) as BBox;
     if (bb.length !== 4 || bb.some(Number.isNaN)) return err(422, 'bbox must be four numbers');
     const yr = url.searchParams.get('year');
-    const r = mockEstimate(bb, url.searchParams.get('source_id'), yr ? Number(yr) : null);
+    const r = mockEstimate(
+      bb,
+      url.searchParams.get('source_id'),
+      yr ? Number(yr) : null,
+      url.searchParams.get('layers'),
+    );
     return json(r.body, r.status);
   }
   if (p === '/areas/fetch' && method === 'POST') {
-    const b = body as { bbox: BBox; source_id?: string; year?: number };
-    const r = mockEstimate(b.bbox, b.source_id ?? null, b.year ?? null);
+    const b = body as { bbox: BBox; source_id?: string; year?: number; layers?: string | string[] };
+    const lt = Array.isArray(b.layers) ? b.layers.join(',') : (b.layers ?? null);
+    const r = mockEstimate(b.bbox, b.source_id ?? null, b.year ?? null, lt);
     if (r.status !== 200) return json(r.body, r.status);
     const mj: MockJob = {
       id: `job-${mockJobs.length + 1}`,
       start: Date.now(),
       est: r.body as AreaEstimate,
     };
+    if ((r.body as AreaEstimate).processed) mj.start = Date.now() - JOB_MS + 400; // instant
     mockJobs.push(mj);
     return json(mockJobView(mj), 202);
   }

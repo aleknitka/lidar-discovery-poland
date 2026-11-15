@@ -1,4 +1,4 @@
-import type { Geometry, Position } from 'geojson';
+import type { Geometry, Polygon, Position } from 'geojson';
 import type { Location } from '../api/types';
 
 export type Bounds = [number, number, number, number]; // w, s, e, n
@@ -50,6 +50,63 @@ export function locationAoi(loc: Location): Bounds | null {
   if (!g) return null;
   if (g.type === 'Point') return pointBuffer(g.coordinates[0], g.coordinates[1]);
   return geometryBounds(g);
+}
+
+type Pt = [number, number];
+
+function ringArea(r: Pt[]): number {
+  let a = 0;
+  for (let i = 0; i < r.length; i++) {
+    const [x1, y1] = r[i];
+    const [x2, y2] = r[(i + 1) % r.length];
+    a += x1 * y2 - x2 * y1;
+  }
+  return Math.abs(a) / 2;
+}
+
+/** Clip a polygon ring to an axis-aligned rectangle (Sutherland-Hodgman). */
+function clipRing(ring: Pt[], [w, s, e, n]: Bounds): Pt[] {
+  const edges: [(p: Pt) => boolean, (a: Pt, b: Pt) => Pt][] = [
+    [(p) => p[0] >= w, (a, b) => [w, a[1] + ((b[1] - a[1]) * (w - a[0])) / (b[0] - a[0])]],
+    [(p) => p[0] <= e, (a, b) => [e, a[1] + ((b[1] - a[1]) * (e - a[0])) / (b[0] - a[0])]],
+    [(p) => p[1] >= s, (a, b) => [a[0] + ((b[0] - a[0]) * (s - a[1])) / (b[1] - a[1]), s]],
+    [(p) => p[1] <= n, (a, b) => [a[0] + ((b[0] - a[0]) * (n - a[1])) / (b[1] - a[1]), n]],
+  ];
+  let out = ring;
+  for (const [inside, cross] of edges) {
+    const input = out;
+    out = [];
+    for (let i = 0; i < input.length; i++) {
+      const cur = input[i];
+      const prev = input[(i + input.length - 1) % input.length];
+      if (inside(cur)) {
+        if (!inside(prev)) out.push(cross(prev, cur));
+        out.push(cur);
+      } else if (inside(prev)) out.push(cross(prev, cur));
+    }
+    if (out.length === 0) break;
+  }
+  return out;
+}
+
+/**
+ * Share (0..1) of a polygon's area that lies inside the bounding box. Areas are computed in
+ * degrees; the ratio is accurate for small areas (a map sheet is about 1 km across).
+ */
+export function polygonShareInside(poly: Polygon, box: Bounds): number {
+  const ring = poly.coordinates[0] as Pt[] | undefined;
+  if (!ring || ring.length < 4) return 0;
+  const open = ring.slice(0, -1);
+  const total = ringArea(open);
+  if (total <= 0) return 0;
+  const clipped = clipRing(open, box);
+  return clipped.length < 3 ? 0 : Math.min(1, ringArea(clipped) / total);
+}
+
+/** Centre of a geometry's bounding box, for labels. */
+export function polygonCentre(g: Geometry): [number, number] | null {
+  const b = geometryBounds(g);
+  return b ? [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2] : null;
 }
 
 export function locationCenter(loc: Location): [number, number] | null {
