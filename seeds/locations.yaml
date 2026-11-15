@@ -1,0 +1,40 @@
+# Seed locations. Points come from Wikidata (P625), fetched 2026-11-13 via the Wikidata API.
+# The coordinates in docs/bieszczady-lidar-handoff.md are known to be wrong and are NOT used.
+# Depopulation cause/year/source are left null until a real source is recorded: do not assume
+# "Operation Vistula" (or any other cause) for a village without a citation.
+# "precision_deg" is the Wikidata coordinate precision; large values mean the point is only
+# approximate - run `ldp locations fetch-prg <id>` to get the cadastral precinct polygon.
+locations:
+  - id: carynskie
+    names: {pl: Caryńskie}
+    point: {lon: 22.61833, lat: 49.16639}
+    depopulation: {year: null, cause: null, source_url: null}
+    provenance:
+      - {provider: wikidata, ref: Q302781, fetched_at: "2026-11-13", precision_deg: 0.0001}
+  - id: krywe
+    names: {pl: Krywe}
+    point: {lon: 22.52194444, lat: 49.25055556}
+    depopulation: {year: null, cause: null, source_url: null}
+    provenance:
+      - {provider: wikidata, ref: Q6439864, fetched_at: "2026-11-13", precision_deg: 0.00028}
+  - id: tworylne
+    names: {pl: Tworylne}
+    point: {lon: 22.4772, lat: 49.2678}
+    depopulation: {year: null, cause: null, source_url: null}
+    provenance:
+      - {provider: wikidata, ref: Q7859495, fetched_at: "2026-11-13", precision_deg: 0.1377}
+    notes: Wikidata coordinate is low precision (about 0.14 degrees); verify against the PRG precinct.
+  - id: jaworzec
+    names: {pl: Jaworzec}
+    point: {lon: 22.4428, lat: 49.2236}
+    depopulation: {year: null, cause: null, source_url: null}
+    provenance:
+      - {provider: wikidata, ref: Q11723449, fetched_at: "2026-11-13", precision_deg: 0.1375}
+    notes: Wikidata coordinate is low precision (about 0.14 degrees); verify against the PRG precinct.
+  - id: zawoj
+    names: {pl: Zawój}
+    point: {lon: 22.45, lat: 49.2667}
+    depopulation: {year: null, cause: null, source_url: null}
+    provenance:
+      - {provider: wikidata, ref: Q5191937, fetched_at: "2026-11-13", precision_deg: 0.1376}
+    notes: Wikidata coordinate is low precision (about 0.14 degrees); verify against the PRG precinct.
