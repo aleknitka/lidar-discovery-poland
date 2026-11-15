@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import type { Map as MlMap, StyleSpecification } from 'maplibre-gl';
+// MapLibre 6 looks for its worker next to its own script. Vite bundles that script elsewhere, so
+// the worker 404s ("Worker failed to load") and every GeoJSON overlay (sheet footprints, candidate
+// markers) silently disappears. Give it the real file instead; Vite emits it in dev and in build.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url';
 import type { FeatureCollection } from 'geojson';
 import 'maplibre-gl/dist/maplibre-gl.css';
+
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import type { CandidateCollection } from '../api/types';
 import { polygonCentre, type Bounds } from '../lib/geo';
 import { AREA_COLORS } from '../lib/areaStyle';

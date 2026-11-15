@@ -118,3 +118,9 @@ export function locationName(loc: Location): string {
   const n = loc.properties.names;
   return n.pl ?? n.uk ?? n.other ?? loc.properties.id;
 }
+
+/** Approximate area of a lon/lat window in km2 (equirectangular, fine at this scale). */
+export function viewAreaKm2([w, s, e, n]: Bounds): number {
+  const midLat = ((s + n) / 2) * (Math.PI / 180);
+  return (e - w) * 111.32 * Math.cos(midLat) * ((n - s) * 110.57);
+}

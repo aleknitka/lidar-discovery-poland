@@ -5,7 +5,7 @@ import { api, ApiError } from '../api/client';
 import { isActiveJob, useActiveJobs, useJob } from '../api/hooks';
 import type { AreaEstimate, BBox, Job } from '../api/areaTypes';
 import type { Bounds } from '../lib/geo';
-import { polygonShareInside } from '../lib/geo';
+import { polygonShareInside, viewAreaKm2 } from '../lib/geo';
 import {
   formatBytes,
   formatDuration,
@@ -34,6 +34,8 @@ import {
 
 /** The button is enabled from this zoom level (a viewport must be small enough to be fetched). */
 export const MIN_FETCH_ZOOM = 13;
+/** Mirrors the server default LDP_MAX_FETCH_AREA_KM2; the server stays the authority. */
+export const VIEW_AREA_HINT_KM2 = 6;
 
 type Epoch = { source_id: string; year: number } | null;
 
@@ -68,6 +70,10 @@ const isLayerSet = (v: unknown): v is string[] =>
 export interface AreaFetchState {
   view: { bounds: Bounds; zoom: number } | null;
   zoomOk: boolean;
+  /** Approximate area of the visible map window, km2 (null before the map has loaded). */
+  areaKm2: number | null;
+  /** True when the visible window fits the default fetch limit; the server still decides. */
+  areaOk: boolean;
   frozen: BBox | null;
   epoch: Epoch;
   setEpoch: (e: Epoch) => void;
@@ -160,6 +166,8 @@ export function useAreaFetch(
   return {
     view,
     zoomOk: !!view && view.zoom >= MIN_FETCH_ZOOM,
+    areaKm2: view ? viewAreaKm2(view.bounds) : null,
+    areaOk: !!view && viewAreaKm2(view.bounds) <= VIEW_AREA_HINT_KM2,
     frozen,
     epoch,
     setEpoch,
@@ -202,19 +210,27 @@ export function FetchButton({ fetch, onOpened }: { fetch: AreaFetchState; onOpen
     <div className="map-action">
       <button
         className="primary"
-        disabled={!fetch.zoomOk || busy}
+        disabled={!fetch.zoomOk || !fetch.areaOk || busy}
         onClick={() => {
           fetch.open();
           onOpened();
         }}
-        aria-describedby={!fetch.zoomOk ? 'area-hint' : undefined}
+        aria-describedby={!fetch.zoomOk || !fetch.areaOk ? 'area-hint' : undefined}
       >
         Get data for this view
       </button>
-      {!fetch.zoomOk && (
+      {!fetch.zoomOk ? (
         <span id="area-hint" className="area-hint">
           Zoom in to fetch LiDAR
         </span>
+      ) : (
+        !fetch.areaOk &&
+        fetch.areaKm2 !== null && (
+          <span id="area-hint" className="area-hint">
+            View is {fetch.areaKm2 < 10 ? fetch.areaKm2.toFixed(1) : Math.round(fetch.areaKm2)} km².
+            Zoom in to under {VIEW_AREA_HINT_KM2} km².
+          </span>
+        )
       )}
     </div>
   );
@@ -426,7 +442,8 @@ function EstimateCard({ f }: { f: AreaFetchState }) {
   });
   const est = estimateOf(q);
   const blocked = !!est?.over_limit;
-  const tiles = useMemo(() => est?.tiles ?? [], [est]);
+  // Older over-limit responses carried a sheet count here, so only trust a real list.
+  const tiles = useMemo(() => (Array.isArray(est?.tiles) ? est.tiles : []), [est]);
   const setOverlay = f.setOverlay;
   // Footprints stay on the map while the card is open; the job overlay takes over afterwards.
   useEffect(() => {

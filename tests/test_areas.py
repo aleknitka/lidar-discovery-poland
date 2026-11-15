@@ -169,6 +169,10 @@ def test_estimate_limits_422(world):
     r = c.get(f"/api/areas/estimate?bbox={w},{s},{w + 0.1},{s + 0.1}")
     assert r.status_code == 422 and r.json()["estimate"]["area_km2"] > 6
     assert r.json()["estimate"]["limits"]["max_area_km2"] == 6
+    # the frontend maps over `tiles`: it must be a list even when nothing was looked up
+    # (a number here crashed the estimate card for any oversized view)
+    assert r.json()["estimate"]["tiles"] == []
+    assert r.json()["estimate"]["over_limit"] == "area"
     small = world["settings"].model_copy(update={"max_fetch_bytes": 1000})
     r = TestClient(create_app(small)).get(q)
     assert r.status_code == 422 and r.json()["estimate"]["bytes_total"] > 1000

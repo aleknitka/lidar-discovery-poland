@@ -179,7 +179,7 @@ export default function Explore() {
   };
 
   return (
-    <div className={`explore ${panelOpen ? 'panel-open' : 'panel-closed'}`}>
+    <div className={`explore ${panelOpen ? 'is-panel-open' : 'is-panel-closed'}`}>
       <main className="map-area">
         {compare.enabled && layers.length > 0 ? (
           <SwipeCompare

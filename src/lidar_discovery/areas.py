@@ -304,7 +304,17 @@ def estimate_area(
     if km2 > settings.max_fetch_area_km2:
         raise AreaError(
             f"area {km2:.2f} km2 exceeds the limit of {settings.max_fetch_area_km2:g} km2; zoom in",
-            {"estimate": {**base, "tiles": 0, "bytes_total": 0, "over_limit": "area"}},
+            {
+                "estimate": {
+                    **base,
+                    "tiles": [],
+                    "sheets": 0,
+                    "bytes_total": 0,
+                    "bytes_cached": 0,
+                    "bytes_to_download": 0,
+                    "over_limit": "area",
+                }
+            },
         )
     tiles, errors = list_area_tiles(settings, aoi)
     if errors and not tiles:

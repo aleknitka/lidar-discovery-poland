@@ -53,8 +53,10 @@ def wait_for(url: str, timeout_s: float, alive: Callable[[], bool]) -> bool:
     return False
 
 
-def _spawn(cmd: list[str], cwd: Path) -> subprocess.Popen:
+def _spawn(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.Popen:
     kwargs: dict = {"cwd": str(cwd)}
+    if env:
+        kwargs["env"] = {**os.environ, **env}
     if IS_WINDOWS:
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
@@ -165,6 +167,7 @@ def run_dev(
                 "--strictPort",
             ],
             fe,
+            {"LDP_API_URL": f"http://127.0.0.1:{api_port}"},
         )
         procs.append(web)
         typer.echo("Starting web app ...")
