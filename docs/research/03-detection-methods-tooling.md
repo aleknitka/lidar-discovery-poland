@@ -156,7 +156,7 @@ Figures marked `[UNVERIFIED]` come from search snippets; primary pages were bloc
 | scikit-learn, segmentation-models-pytorch, sahi | not fetched individually | OK `[VERIFIED: local uv resolve]` | |
 | whitebox | not fetched | OK `[VERIFIED: local uv resolve]` | Docs 404 |
 
-Project: `pyproject.toml` pins `requires-python = ">=3.14"` with no dependencies (`[VERIFIED: local file]` C:\Users\alekn\orca\projects\lidar-discovery-poland\pyproject.toml). Wheel checks are resolution-only; no installation was tested.
+Project: `pyproject.toml` pins `requires-python = ">=3.14"` with no dependencies (`[VERIFIED: local file]` `pyproject.toml` at the time of writing; since changed to `>=3.12,<3.14`). Wheel checks are resolution-only; no installation was tested.
 
 Recommendation: keep the core pipeline on 3.14 (laspy, rasterio, geopandas, torch, ultralytics, sklearn, sahi). Isolate rvt-py and PDAL in a separate environment (3.11 or conda) and exchange GeoTIFFs.
 
