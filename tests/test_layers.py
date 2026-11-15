@@ -196,3 +196,34 @@ def test_dtm_tile_is_a_stretched_elevation_ramp(world):  # noqa: F811
     assert len({tuple(p[:3]) for p in a[a[:, 3] == 255]}) > 20  # a ramp, not one flat colour
     assert not np.array_equal(np.asarray(plain), np.asarray(shaded))
     assert c.get(dtm["tile_url"].format(z=z, x=x, y=y) + "?shade=3").status_code == 422
+
+
+def test_tile_styles_colour_bw_and_validation(world):  # noqa: F811
+    import io
+    import math
+
+    from PIL import Image
+
+    j, _ = _run_layers(world, "dtm")
+    c = TestClient(create_app(world["settings"]))
+    dtm = next(lay for lay in c.get(f"/api/locations/{j.location_id}/layers").json())
+    w, s, e, n = world["bbox"]
+    z, k = 17, 2**17
+    x = int(((w + e) / 2 + 180) / 360 * k)
+    y = int((1 - math.asinh(math.tan(math.radians((s + n) / 2))) / math.pi) / 2 * k)
+    url = dtm["tile_url"].format(z=z, x=x, y=y)
+
+    def px(style):
+        r = c.get(url + f"?style={style}")
+        assert r.status_code == 200
+        a = np.asarray(Image.open(io.BytesIO(r.content)).convert("RGBA")).reshape(-1, 4)
+        return a[a[:, 3] == 255][:, :3]
+
+    bw = px("bw")
+    assert (bw[:, 0] == bw[:, 1]).all() and (bw[:, 1] == bw[:, 2]).all()  # grey only
+    col = px("colour")
+    assert col[:, 2].astype(int).mean() != col[:, 0].astype(int).mean()  # has hue
+    lo = col[np.argmin(bw[:, 0])]
+    hi = col[np.argmax(bw[:, 0])]
+    assert lo[2] > lo[0] and hi[0] > hi[2]  # lowest is blue, highest is red
+    assert c.get(url + "?style=neon").status_code == 422

@@ -12,6 +12,7 @@ maplibregl.setWorkerUrl(maplibreWorkerUrl);
 import type { CandidateCollection } from '../api/types';
 import { polygonCentre, type Bounds } from '../lib/geo';
 import { AREA_COLORS } from '../lib/areaStyle';
+import { PHOTO_TILES, type BasemapId } from '../lib/display';
 
 export interface RasterSpec {
   id: string;
@@ -24,6 +25,8 @@ export interface MapViewProps {
   /** Fit the map to these bounds whenever they change. */
   bounds?: Bounds | null;
   rasters?: RasterSpec[];
+  /** Background: street map (default) or aerial photo. */
+  basemap?: BasemapId;
   candidates?: CandidateCollection | null;
   selectedId?: string | null;
   /** Drawing-in-progress geometry (points / line / polygon). */
@@ -46,7 +49,7 @@ export interface MapViewProps {
 
 export const ATTRIBUTION = ['© OpenStreetMap contributors', 'LiDAR: GUGiK (Geoportal.gov.pl)'];
 
-const STYLE: StyleSpecification = {
+const makeStyle = (basemap: BasemapId): StyleSpecification => ({
   version: 8,
   sources: {
     osm: {
@@ -56,9 +59,29 @@ const STYLE: StyleSpecification = {
       maxzoom: 19,
       attribution: '© OpenStreetMap contributors',
     },
+    photo: {
+      type: 'raster',
+      tiles: [PHOTO_TILES],
+      tileSize: 256,
+      maxzoom: 19,
+      attribution: 'Aerial photo: GUGiK (Geoportal.gov.pl)',
+    },
   },
-  layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
-};
+  layers: [
+    {
+      id: 'osm',
+      type: 'raster',
+      source: 'osm',
+      layout: { visibility: basemap === 'osm' ? 'visible' : 'none' },
+    },
+    {
+      id: 'photo',
+      type: 'raster',
+      source: 'photo',
+      layout: { visibility: basemap === 'photo' ? 'visible' : 'none' },
+    },
+  ],
+});
 
 export const STATUS_COLORS: Record<string, string> = {
   proposed: '#e0a100',
@@ -223,6 +246,7 @@ function addOverlays(map: MlMap) {
 export default function MapView({
   bounds,
   rasters = [],
+  basemap = 'osm',
   candidates,
   selectedId,
   draft,
@@ -252,7 +276,7 @@ export default function MapView({
     if (!container.current) return;
     const map = new maplibregl.Map({
       container: container.current,
-      style: STYLE,
+      style: makeStyle(basemap),
       bounds: initialBounds.current ?? BIESZCZADY_BOUNDS,
       fitBoundsOptions: { padding: 20 },
       interactive,
@@ -287,6 +311,14 @@ export default function MapView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Background map / aerial photo.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loaded) return;
+    map.setLayoutProperty('osm', 'visibility', basemap === 'osm' ? 'visible' : 'none');
+    map.setLayoutProperty('photo', 'visibility', basemap === 'photo' ? 'visible' : 'none');
+  }, [basemap, loaded]);
 
   // Fit to bounds.
   const boundsKey = bounds ? bounds.join(',') : '';

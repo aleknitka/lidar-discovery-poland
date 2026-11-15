@@ -33,6 +33,18 @@ DTM_RAMP = np.array(
     ],
     dtype="float32",
 )
+# Colour style for every other layer (and for the DTM on request): blue = low, red = high.
+RAINBOW_RAMP = np.array(
+    [
+        [0.00, 36, 60, 190],  # low: blue
+        [0.25, 40, 160, 220],  # cyan
+        [0.50, 90, 190, 100],  # green
+        [0.75, 245, 210, 60],  # yellow
+        [1.00, 205, 40, 40],  # high: red
+    ],
+    dtype="float32",
+)
+STYLES = ("default", "colour", "bw")
 # SVF reads best dark = enclosed; slope dark = flat is conventionally inverted (steep = dark).
 INVERT = {"slope"}
 
@@ -70,11 +82,15 @@ def render_tile(
     x: int,
     y: int,
     shade: float = 0.0,
+    style: str = "default",
 ) -> bytes:
     """Return PNG bytes for tile z/x/y; a fully transparent tile outside the raster.
 
     `shade` (0..1, DTM only) blends a hillshade into the elevation colours as a preview aid; the
-    default 0 is plain elevation."""
+    default 0 is plain elevation.
+
+    `style`: "default" (muted height colours for the DTM, grey for the rest), "colour" (blue = low
+    to red = high for every layer) or "bw" (black = low to white = high, no colour)."""
     lo, hi = display_range or DEFAULT_RANGES.get(kind, (0.0, 1.0))
     if hi <= lo:
         hi = lo + 1e-6
@@ -89,9 +105,14 @@ def render_tile(
         return transparent_tile()
     scaled = np.clip((data - lo) / (hi - lo), 0.0, 1.0)
     alpha = np.where(valid, 255, 0).astype("uint8")
-    if kind == "dtm":
-        rgb = _colour_ramp(scaled, DTM_RAMP).astype("float32")
-        if shade > 0:
+    if style not in STYLES:
+        style = "default"
+    ramp = {"default": DTM_RAMP if kind == "dtm" else None, "colour": RAINBOW_RAMP, "bw": None}[
+        style
+    ]
+    if ramp is not None:
+        rgb = _colour_ramp(scaled, ramp).astype("float32")
+        if shade > 0 and kind == "dtm":
             b = img.bounds  # Web Mercator metres; ground distance = mercator * cos(latitude)
             lat = math.atan(math.sinh(math.pi * (1 - 2 * (y + 0.5) / 2**z)))
             cell = (b[2] - b[0]) / TILE * math.cos(lat)
@@ -103,7 +124,7 @@ def render_tile(
             buf, "PNG"
         )
         return buf.getvalue()
-    if kind in INVERT:
+    if kind in INVERT and style != "colour":
         scaled = 1.0 - scaled
     grey = (scaled * 255).astype("uint8")
     buf = io.BytesIO()

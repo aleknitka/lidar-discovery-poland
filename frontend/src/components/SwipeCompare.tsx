@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Map as MlMap } from 'maplibre-gl';
 import MapView, { type MapViewProps, type RasterSpec } from './MapView';
+import type { BasemapId } from '../lib/display';
 
-interface Props extends Omit<MapViewProps, 'rasters' | 'attribution' | 'interactive'> {
+interface Props extends Omit<MapViewProps, 'rasters' | 'attribution' | 'interactive' | 'basemap'> {
   left: RasterSpec[];
   right: RasterSpec[];
   leftLabel: string;
   rightLabel: string;
+  leftBasemap: BasemapId;
+  rightBasemap: BasemapId;
 }
 
 /**
@@ -18,6 +21,8 @@ export default function SwipeCompare({
   right,
   leftLabel,
   rightLabel,
+  leftBasemap,
+  rightBasemap,
   onMapReady,
   ...shared
 }: Props) {
@@ -58,6 +63,7 @@ export default function SwipeCompare({
       <MapView
         {...shared}
         rasters={left}
+        basemap={leftBasemap}
         attribution
         onMapReady={(m) => {
           primary.current = m;
@@ -70,6 +76,7 @@ export default function SwipeCompare({
           {...shared}
           onClick={undefined}
           rasters={right}
+          basemap={rightBasemap}
           attribution={false}
           interactive={false}
           onMapReady={(m) => {

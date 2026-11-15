@@ -1,5 +1,6 @@
 import type { Layer } from '../api/types';
 import { displayName, kindRank, layerHint, layerInfo, shortName } from '../content/layers';
+import { COLOUR_MODES, type BasemapId, type ColourMode } from '../lib/display';
 
 export interface LayerState {
   visible: boolean;
@@ -14,7 +15,9 @@ export interface CompareState {
   rightId: string;
 }
 
+/** Compare choices that are not LiDAR layers: the street map and the aerial photo. */
 export const BASEMAP = 'basemap';
+export const PHOTO = 'photo';
 
 /** Short label for map titles, compare menus and aria text: "2012 Sky-view factor". */
 export const layerLabel = (l: Layer) => `${l.epoch} ${shortName(l.kind)}`;
@@ -27,6 +30,45 @@ interface Props {
   onCompareChange: (c: CompareState) => void;
   /** Open the Info tab for this layer. */
   onInfo: (layer: Layer) => void;
+  colourMode: ColourMode;
+  onColourMode: (m: ColourMode) => void;
+  basemap: BasemapId;
+  onBasemap: (b: BasemapId) => void;
+}
+
+function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string; title?: string }[];
+  onChange: (v: T) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="seg-row">
+      <span className="seg-label">{label}</span>
+      <div className="seg" role="group" aria-label={label}>
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            className={o.value === value ? 'active' : ''}
+            aria-pressed={o.value === value}
+            title={o.title}
+            disabled={disabled}
+            onClick={() => onChange(o.value)}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function groupByEpoch(layers: Layer[]): [number, Layer[]][] {
@@ -44,6 +86,10 @@ export default function LayerControl({
   compare,
   onCompareChange,
   onInfo,
+  colourMode,
+  onColourMode,
+  basemap,
+  onBasemap,
 }: Props) {
   if (layers.length === 0) {
     return (
@@ -54,7 +100,8 @@ export default function LayerControl({
   }
   const options = (
     <>
-      <option value={BASEMAP}>Basemap only</option>
+      <option value={BASEMAP}>Street map</option>
+      <option value={PHOTO}>Aerial photo</option>
       {layers.map((l) => (
         <option key={l.id} value={l.id}>
           {layerLabel(l)} ({l.source_id})
@@ -64,6 +111,24 @@ export default function LayerControl({
   );
   return (
     <div className="layer-control">
+      <fieldset className="display-opts">
+        <Segmented
+          label="Colours"
+          value={colourMode}
+          options={COLOUR_MODES}
+          onChange={onColourMode}
+        />
+        <Segmented
+          label="Background"
+          value={basemap}
+          options={[
+            { value: 'osm', label: 'Map', title: 'Street map (OpenStreetMap)' },
+            { value: 'photo', label: 'Photo', title: 'Aerial photo (GUGiK orthophoto)' },
+          ]}
+          onChange={onBasemap}
+          disabled={compare.enabled}
+        />
+      </fieldset>
       {groupByEpoch(layers).map(([epoch, ls]) => (
         <fieldset key={epoch}>
           <legend>
@@ -72,46 +137,43 @@ export default function LayerControl({
           {ls.map((l) => {
             const st = states[l.id] ?? { visible: false, opacity: 1 };
             const known = layerInfo(l.kind);
+            const hint = layerHint(l.kind) || 'No description yet.';
+            const tip = `${hint}${l.resolution_m ? ` ${l.resolution_m} m grid.` : ''}`;
             const hintId = `hint-${l.id}`;
             return (
-              <div className="layer-row" key={l.id}>
-                <div className="layer-main">
-                  <label className="layer-name">
-                    <input
-                      type="checkbox"
-                      checked={st.visible}
-                      disabled={compare.enabled}
-                      aria-describedby={hintId}
-                      onChange={(e) => onChange(l.id, { visible: e.target.checked })}
-                    />
-                    <span>
-                      {displayName(l.kind)}{' '}
-                      {known && <small className="tech">{known.technical}</small>}
-                    </span>
-                  </label>
-                  <button
-                    type="button"
-                    className="info-btn"
-                    onClick={() => onInfo(l)}
-                    aria-label={`About ${displayName(l.kind)}`}
-                    title={`What is ${displayName(l.kind)}?`}
-                  >
-                    <span aria-hidden="true">i</span>
-                  </button>
-                </div>
-                <p id={hintId} className="layer-hint">
-                  {layerHint(l.kind) || 'No description yet.'}
-                  {l.resolution_m ? ` ${l.resolution_m} m grid.` : ''}
-                </p>
+              <div className="layer-row" key={l.id} title={tip}>
+                <label className="layer-name">
+                  <input
+                    type="checkbox"
+                    checked={st.visible}
+                    disabled={compare.enabled}
+                    aria-describedby={hintId}
+                    onChange={(e) => onChange(l.id, { visible: e.target.checked })}
+                  />
+                  <span>{known?.shortName ?? displayName(l.kind)}</span>
+                </label>
+                <span id={hintId} className="sr-only">
+                  {tip}
+                </span>
                 <input
                   type="range"
                   min={0}
                   max={1}
                   step={0.05}
                   value={st.opacity}
+                  title="Opacity"
                   aria-label={`Opacity of ${layerLabel(l)}`}
                   onChange={(e) => onChange(l.id, { opacity: Number(e.target.value) })}
                 />
+                <button
+                  type="button"
+                  className="info-btn"
+                  onClick={() => onInfo(l)}
+                  aria-label={`About ${displayName(l.kind)}`}
+                  title={`${displayName(l.kind)}: ${tip} Click for more.`}
+                >
+                  <span aria-hidden="true">i</span>
+                </button>
               </div>
             );
           })}
@@ -125,7 +187,7 @@ export default function LayerControl({
             checked={compare.enabled}
             onChange={(e) => onCompareChange({ ...compare, enabled: e.target.checked })}
           />{' '}
-          Compare two layers side by side
+          Compare two views with a slider
         </label>
         {compare.enabled && (
           <>

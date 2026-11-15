@@ -8,6 +8,7 @@ import MapView, { type RasterSpec } from '../components/MapView';
 import SwipeCompare from '../components/SwipeCompare';
 import LayerControl, {
   BASEMAP,
+  PHOTO,
   layerLabel,
   type CompareState,
   type LayerState,
@@ -23,12 +24,25 @@ import CandidatePanel, { type DrawMode, type DrawState } from '../components/Can
 import { StatusBadge } from '../components/Badges';
 import { kindRank } from '../content/layers';
 import { locationAoi, locationName, type Bounds } from '../lib/geo';
+import {
+  isBasemapId,
+  isColourMode,
+  styledTileUrl,
+  type BasemapId,
+  type ColourMode,
+} from '../lib/display';
 import { usePersistentState } from '../lib/usePersistentState';
 
 const NO_DRAW: DrawState = { mode: 'none', vertices: [] };
 
-function toRaster(l: Layer, st: LayerState | undefined): RasterSpec {
-  return { id: l.id, tileUrl: l.tile_url, opacity: st?.opacity ?? 1, bounds: l.bounds };
+function toRaster(l: Layer, st: LayerState | undefined, mode: ColourMode): RasterSpec {
+  // The mode is part of the id so the map swaps the tiles when the colours change.
+  return {
+    id: `${l.id}~${mode}`,
+    tileUrl: styledTileUrl(l.tile_url, mode),
+    opacity: st?.opacity ?? 1,
+    bounds: l.bounds,
+  };
 }
 
 function draftCollection(d: DrawState): FeatureCollection {
@@ -83,6 +97,12 @@ export default function Explore() {
     kind: 'dtm',
     layerId: null,
   });
+  const [colourMode, setColourMode] = usePersistentState<ColourMode>(
+    'ldp.colours',
+    'default',
+    isColourMode,
+  );
+  const [basemap, setBasemap] = usePersistentState<BasemapId>('ldp.basemap', 'osm', isBasemapId);
   const [layerStates, setLayerStates] = useState<LayerStates>({});
   const [compare, setCompare] = useState<CompareState>({
     enabled: false,
@@ -117,10 +137,12 @@ export default function Explore() {
       .filter((l) => l.kind === (first?.kind ?? 'dtm'))
       .sort((a, b) => a.epoch - b.epoch);
     setLayerStates(states);
+    // Two surveys of the same layer if there are, otherwise the street map against the layer.
+    const two = same.length >= 2;
     setCompare({
       enabled: false,
-      leftId: same[0]?.id ?? BASEMAP,
-      rightId: same[same.length - 1]?.id ?? BASEMAP,
+      leftId: two ? same[0].id : BASEMAP,
+      rightId: two ? same[same.length - 1].id : (same[0]?.id ?? PHOTO),
     });
   }, [layers]);
 
@@ -132,15 +154,18 @@ export default function Explore() {
   const stackRasters = layers
     .filter((l) => layerStates[l.id]?.visible)
     .sort((a, b) => a.epoch - b.epoch || kindRank(b.kind) - kindRank(a.kind))
-    .map((l) => toRaster(l, layerStates[l.id]));
+    .map((l) => toRaster(l, layerStates[l.id], colourMode));
   const sideRasters = (id: string): RasterSpec[] => {
     const l = byId.get(id);
-    return l ? [toRaster(l, layerStates[l.id])] : [];
+    return l
+      ? [toRaster(l, { visible: true, opacity: layerStates[l.id]?.opacity ?? 1 }, colourMode)]
+      : [];
   };
   const labelOf = (id: string) => {
     const l = byId.get(id);
-    return l ? layerLabel(l) : 'Basemap';
+    return l ? layerLabel(l) : id === PHOTO ? 'Aerial photo' : 'Street map';
   };
+  const sideBasemap = (id: string): BasemapId => (id === PHOTO ? 'photo' : 'osm');
 
   const selected = candidatesQ.data?.features.find((c) => c.properties.id === selectedId) ?? null;
 
@@ -189,9 +214,11 @@ export default function Explore() {
             right={sideRasters(compare.rightId)}
             leftLabel={labelOf(compare.leftId)}
             rightLabel={labelOf(compare.rightId)}
+            leftBasemap={sideBasemap(compare.leftId)}
+            rightBasemap={sideBasemap(compare.rightId)}
           />
         ) : (
-          <MapView {...common} rasters={stackRasters} />
+          <MapView {...common} rasters={stackRasters} basemap={basemap} />
         )}
         <div className="map-title">{feature ? locationName(feature) : 'Bieszczady'}</div>
         <FetchButton fetch={fetchState} onOpened={() => openTab('data')} />
@@ -223,6 +250,10 @@ export default function Explore() {
                 }
                 compare={compare}
                 onCompareChange={setCompare}
+                colourMode={colourMode}
+                onColourMode={setColourMode}
+                basemap={basemap}
+                onBasemap={setBasemap}
                 onInfo={(l) => {
                   setInfo({ kind: l.kind, layerId: l.id });
                   setTab('info');

@@ -130,6 +130,7 @@ def layer_tile(
     x: int,
     y: int,
     shade: float = Query(default=0.0, ge=0.0, le=1.0),
+    style: str = Query(default="default", pattern="^(default|colour|bw)$"),
     session: Session = Depends(get_session),
     cfg: Settings = Depends(get_cfg),
 ) -> Response:
@@ -145,7 +146,7 @@ def layer_tile(
     if not (0 <= z <= 24) or not (0 <= x < 2**z) or not (0 <= y < 2**z):
         raise HTTPException(400, "invalid tile coordinates")
     rng = json.loads(prod.provenance).get("display_range")
-    png = render_tile(path, prod.kind, tuple(rng) if rng else None, z, x, y, shade)
+    png = render_tile(path, prod.kind, tuple(rng) if rng else None, z, x, y, shade, style)
     return Response(png, media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
 
 
