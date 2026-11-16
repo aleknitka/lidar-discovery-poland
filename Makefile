@@ -39,3 +39,9 @@ fmt:  ## format Python code
 
 build:  ## production build of the web app
 	cd frontend && npm run build
+
+verify:  ## one command to check everything (use this after any change)
+	uv run ruff check . && uv run ruff format --check .
+	uv run pytest
+	cd frontend && npm run lint && npx tsc --noEmit && npm run build
+	@echo "verify: all checks passed"
